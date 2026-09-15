@@ -1,0 +1,20 @@
+node_modules/
+.expo/
+dist/
+web-build/
+*.log
+.claude/
+
+# Autres projets clients cohabitant dans ce dossier (hors périmètre du repo mlv1)
+app-client/
+app-cmdt/
+app-direction/
+cmdt-ai/
+cmdt-final/
+CMDT_SMART_AUDIT_PRESENTATION/
+dossier-cmdt-plateforme-terrain/
+presentation-cmdt-plateforme-terrain/
+presentation-cmdt-smart/
+proposition-cmdt-plateforme-terrain/
+LA-POSTE-MALI.md
+terminal
