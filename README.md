@@ -4,7 +4,7 @@ Marketplace + livraison à Bamako : des clients commandent auprès de vendeurs, 
 acheminent les commandes, un administrateur supervise.
 
 - **Application en ligne (phase de test)** : https://mlchop-31688.web.app
-- **Dépôt** : https://github.com/aidalfallfatima-boop4/MLchopv1-
+- **Dépôt** : https://github.com/aidalfallfatima-boop4/MLchopv1
 
 ## Les 4 rôles
 

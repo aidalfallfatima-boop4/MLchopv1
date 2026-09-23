@@ -60,10 +60,10 @@ Le rôle Admin n'est pas ouvert à l'inscription.
 1. **Dans l'app : bouton 🐞** en bas à droite (visible une fois connecté) → choisir *Bug*,
    *Suggestion* ou *Faille de sécurité* → décrire → Envoyer. L'écran courant et votre navigateur
    sont joints automatiquement. Les retours « Faille de sécurité » ne sont lus que par l'admin.
-2. **Sur GitHub** (si vous avez un compte) : https://github.com/aidalfallfatima-boop4/MLchopv1-/issues/new/choose
+2. **Sur GitHub** (si vous avez un compte) : https://github.com/aidalfallfatima-boop4/MLchopv1/issues/new/choose
    → modèle *Bug* ou *Suggestion*.
 3. **Faille de sécurité** : uniquement en privé, via le bouton 🐞 (*Faille de sécurité*) ou
-   https://github.com/aidalfallfatima-boop4/MLchopv1-/security/advisories/new — voir [SECURITY.md](SECURITY.md).
+   https://github.com/aidalfallfatima-boop4/MLchopv1/security/advisories/new — voir [SECURITY.md](SECURITY.md).
 
 Un bon signalement : ce que vous avez fait (étapes), ce que vous attendiez, ce qui s'est passé,
 votre rôle, et si possible une capture d'écran (issue GitHub).

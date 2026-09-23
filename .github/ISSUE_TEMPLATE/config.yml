@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
   - name: 🔒 Faille de sécurité
-    url: https://github.com/aidalfallfatima-boop4/MLchopv1-/security/advisories/new
+    url: https://github.com/aidalfallfatima-boop4/MLchopv1/security/advisories/new
     about: Ne publiez pas une faille en issue publique — signalez-la en privé ici (voir SECURITY.md).
