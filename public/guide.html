@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Guide testeurs ML CHOP</title>
+<!-- Version web courte de GUIDE-TESTEURS.md, servie sur /guide (lien court à partager). -->
+<style>
+  :root { --bg:#F7F5F0; --card:#FFFFFF; --text:#1F2937; --muted:#6B7280; --accent:#D97706; --line:#E5E7EB; --code:#FEF3C7; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#111827; --card:#1F2937; --text:#F3F4F6; --muted:#9CA3AF; --accent:#F59E0B; --line:#374151; --code:#78350F; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  main { max-width:680px; margin:0 auto; padding:24px 16px 48px; }
+  h1 { font-size:1.6rem; margin:0 0 4px; }
+  h2 { font-size:1.15rem; margin:28px 0 10px; color:var(--accent); }
+  h3 { font-size:1rem; margin:16px 0 6px; }
+  p, li { margin:6px 0; }
+  ul { padding-left:20px; }
+  .muted { color:var(--muted); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; margin:12px 0; }
+  .cta { display:block; text-align:center; background:var(--accent); color:#fff; text-decoration:none; font-weight:800; padding:14px; border-radius:12px; margin:16px 0; }
+  code { background:var(--code); padding:1px 6px; border-radius:6px; font-weight:700; }
+  a { color:var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>🇲🇱 Guide testeurs ML CHOP</h1>
+  <p class="muted">Marketplace + livraison à Bamako. 5 minutes de lecture, merci de tester !</p>
+
+  <a class="cta" href="/">Ouvrir l'application →</a>
+
+  <h2>1. Créer un compte</h2>
+  <div class="card">
+    <p>Choisir un espace (Client, Vendeur ou Livreur) → « Créer un compte » → nom, téléphone, mot de passe.</p>
+    <p><strong>Code OTP : <code>1234</code></strong> (aucun SMS n'est envoyé).</p>
+    <ul>
+      <li><strong>Client</strong> : actif immédiatement.</li>
+      <li><strong>Vendeur / Livreur</strong> : en attente de validation par l'admin (faite à la main).</li>
+    </ul>
+  </div>
+
+  <h2>2. Règles importantes</h2>
+  <ul>
+    <li><strong>Paiements simulés</strong> : aucun argent ne circule.</li>
+    <li><strong>Maximum 5 produits différents</strong> par commande.</li>
+    <li><strong>Pas de vraies données personnelles</strong> : nom et numéro inventés.</li>
+    <li><strong>Pas de scripts de masse</strong> : le quota gratuit est partagé par les 50 testeurs.</li>
+    <li>Les tests de sécurité sont bienvenus, mais une faille se signale <strong>en privé</strong>.</li>
+  </ul>
+
+  <h2>3. Quoi tester</h2>
+  <h3>Client</h3>
+  <ul>
+    <li>Inscription, déconnexion, reconnexion</li>
+    <li>Catalogue, catégories, fiche produit, avis, favoris</li>
+    <li>Panier (quantités, retrait, limite de 5 produits) et commande avec chaque moyen de paiement</li>
+    <li>Suivi de commande : statuts, notifications, code de livraison</li>
+  </ul>
+  <h3>Vendeur (après validation)</h3>
+  <ul>
+    <li>Ajouter, modifier, masquer, supprimer un produit</li>
+    <li>Confirmer, préparer, transmettre ou refuser une commande ; revenus</li>
+  </ul>
+  <h3>Livreur (après validation)</h3>
+  <ul>
+    <li>Accepter une mission → récupération → arrivée → code du client → livrée</li>
+    <li>Géolocalisation (autoriser le navigateur), historique, gains</li>
+  </ul>
+  <h3>Tous</h3>
+  <ul>
+    <li>Téléphone et PC, rechargement de la page (la session doit rester ouverte)</li>
+    <li>Messages d'erreur compréhensibles</li>
+    <li>Essayer d'accéder aux données des autres (doit être refusé)</li>
+  </ul>
+
+  <h2>4. Signaler un problème</h2>
+  <div class="card">
+    <p><strong>Dans l'app : bouton 🐞</strong> en bas à droite (une fois connecté) → Bug, Suggestion ou Faille de sécurité.</p>
+    <p><strong>Sur GitHub</strong> : <a href="https://github.com/aidalfallfatima-boop4/MLchopv1/issues/new/choose">ouvrir une issue</a>.</p>
+    <p><strong>Faille de sécurité</strong> : uniquement en privé (bouton 🐞 « Faille de sécurité » ou
+      <a href="https://github.com/aidalfallfatima-boop4/MLchopv1/security/advisories/new">signalement privé GitHub</a>).</p>
+    <p class="muted">Un bon signalement : vos étapes, ce que vous attendiez, ce qui s'est passé, votre rôle.</p>
+  </div>
+</main>
+</body>
+</html>
