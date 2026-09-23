@@ -1,22 +1,37 @@
 import { createStore } from "./createStore";
 import { Review } from "../types";
-import { loadJSON, saveJSON } from "../services/persistence";
+import { getCurrentAccount, subscribeCurrentAccount } from "./authStore";
+import { col, docRef, setDoc, subscribeCollection } from "../services/firebase/firestore";
 
-const STORAGE_KEY = "mlchop.reviews.v1";
+const REVIEWS_COLLECTION = "reviews";
 
 const store = createStore<Review[]>([]);
 
 export const useReviews = store.useStore;
 
 let hydrated = false;
+let unsubscribeQuery: (() => void) | null = null;
+let currentUid: string | null = null;
 
-/** À appeler une fois au démarrage : restaure les avis laissés par les clients. */
+/** Voir productStore.ts : ré-abonnement à chaque changement de session pour
+ * survivre à un premier essai lancé avant que l'auth Firebase ne soit prête. */
+function resubscribe() {
+  const uid = getCurrentAccount()?.id ?? null;
+  if (uid === currentUid && unsubscribeQuery) return;
+  currentUid = uid;
+
+  unsubscribeQuery?.();
+  unsubscribeQuery = subscribeCollection<Review>(col(REVIEWS_COLLECTION), (items) => {
+    store.setState([...items].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)));
+  });
+}
+
+/** À appeler une fois au démarrage : écoute les avis produits en temps réel (lecture publique). */
 export async function hydrateReviewStore() {
   if (hydrated) return;
   hydrated = true;
-  const saved = await loadJSON<Review[]>(STORAGE_KEY, []);
-  store.setState(saved);
-  store.subscribe(() => saveJSON(STORAGE_KEY, store.getState()));
+  resubscribe();
+  subscribeCurrentAccount(resubscribe);
 }
 
 export function addReview(input: {
@@ -37,6 +52,15 @@ export function addReview(input: {
   };
 
   store.setState((current) => [review, ...current]);
+
+  const account = getCurrentAccount();
+  setDoc(docRef(REVIEWS_COLLECTION, review.id), {
+    ...review,
+    authorId: account?.id ?? null,
+  }).catch((error) => {
+    if (__DEV__) console.warn("[reviewStore] addReview failed:", error);
+  });
+
   return review;
 }
 

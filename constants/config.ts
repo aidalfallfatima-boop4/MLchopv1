@@ -7,6 +7,14 @@ export const DEMO_DELIVERY_CODE = "1234";
 /** Code OTP fixe pour la démo (inscription ET livraison) — aucune vraie API SMS branchée. */
 export const DEMO_OTP_CODE = "1234";
 
+/**
+ * Mot de passe Firebase Auth partagé des 4 comptes de démo. Ces comptes sont
+ * auto-créés (self-healing) au premier tap sur "Connexion rapide (démo)" —
+ * voir loginDemo() dans store/authStore.ts — donc rien à faire côté Firebase
+ * Console avant de tester.
+ */
+export const DEMO_PASSWORD = "MLChopDemo2026!";
+
 export const SELLER_ID = "seller-1";
 
 export const PAYMENT_METHODS = [

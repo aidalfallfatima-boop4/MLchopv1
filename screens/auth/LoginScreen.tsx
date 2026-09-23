@@ -15,7 +15,7 @@ import {
 import { Role } from "../../types";
 import { getRoleTheme } from "../../constants/roleTheme";
 import { DEMO_PHONES } from "../../constants/config";
-import { login } from "../../store/authStore";
+import { login, loginDemo } from "../../store/authStore";
 
 type Props = {
   role: Exclude<Role, null>;
@@ -34,30 +34,40 @@ export default function LoginScreen({ role, onBack, onRegister }: Props) {
   const theme = getRoleTheme(role);
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  function submit() {
+  async function submit() {
     if (!phone.trim()) {
       Alert.alert("Numéro requis", "Entrez votre numéro de téléphone.");
       return;
     }
 
-    const result = login(phone.trim(), password);
+    setLoading(true);
+    const result = await login(phone.trim(), password);
+    setLoading(false);
 
     if (!result.success) {
       Alert.alert(
         "Connexion impossible",
         result.reason === "not_found"
           ? "Aucun compte trouvé avec ce numéro. Créez un compte."
-          : "Mot de passe incorrect."
+          : result.reason === "wrong_password"
+            ? "Mot de passe incorrect."
+            : result.message ?? "Une erreur est survenue."
       );
       return;
     }
   }
 
-  function useDemoAccount() {
+  async function useDemoAccount() {
     setPhone(DEMO_BY_ROLE[role]);
-    setPassword("demo");
-    login(DEMO_BY_ROLE[role], "demo");
+    setLoading(true);
+    const result = await loginDemo(role);
+    setLoading(false);
+
+    if (!result.success) {
+      Alert.alert("Connexion impossible", result.message ?? "Réessayez dans un instant.");
+    }
   }
 
   return (
@@ -94,10 +104,11 @@ export default function LoginScreen({ role, onBack, onRegister }: Props) {
           />
 
           <TouchableOpacity
-            style={[styles.cta, { backgroundColor: theme.primary }]}
+            style={[styles.cta, { backgroundColor: theme.primary }, loading && { opacity: 0.6 }]}
             onPress={submit}
+            disabled={loading}
           >
-            <Text style={styles.ctaText}>SE CONNECTER</Text>
+            <Text style={styles.ctaText}>{loading ? "CONNEXION..." : "SE CONNECTER"}</Text>
           </TouchableOpacity>
 
           {role !== "admin" ? (
@@ -112,11 +123,12 @@ export default function LoginScreen({ role, onBack, onRegister }: Props) {
             <Text style={styles.demoTitle}>🎬 Compte de démonstration</Text>
             <Text style={styles.demoPhone}>{DEMO_BY_ROLE[role]}</Text>
             <TouchableOpacity
-              style={[styles.demoButton, { borderColor: theme.primary }]}
+              style={[styles.demoButton, { borderColor: theme.primary }, loading && { opacity: 0.6 }]}
               onPress={useDemoAccount}
+              disabled={loading}
             >
               <Text style={[styles.demoButtonText, { color: theme.primary }]}>
-                Connexion rapide (démo)
+                {loading ? "Connexion..." : "Connexion rapide (démo)"}
               </Text>
             </TouchableOpacity>
           </View>

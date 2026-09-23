@@ -5,6 +5,14 @@ web-build/
 *.log
 .claude/
 
+# Firebase : config réelle jamais commit, seul .env.example (valeurs vides) l'est.
+.env
+.env.local
+.firebase/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+
 # Autres projets clients cohabitant dans ce dossier (hors périmètre du repo mlv1)
 app-client/
 app-cmdt/

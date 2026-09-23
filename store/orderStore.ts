@@ -3,9 +3,19 @@ import { createStore } from "./createStore";
 import { DEMO_DELIVERY_CODE } from "../constants/config";
 import { pushNotification } from "./notificationStore";
 import { STATUS_META } from "../constants/theme";
-import { loadJSON, saveJSON } from "../services/persistence";
+import { getCurrentAccount, subscribeCurrentAccount } from "./authStore";
+import {
+  arrayUnion,
+  col,
+  docRef,
+  query,
+  setDoc,
+  subscribeCollection,
+  updateDoc,
+  where,
+} from "../services/firebase/firestore";
 
-const STORAGE_KEY = "mlchop.orders.v1";
+const ORDERS_COLLECTION = "orders";
 
 const seed: Order[] = [
   {
@@ -59,15 +69,54 @@ const store = createStore<Order[]>(seed);
 export const useOrderStore = store.useStore;
 export const getOrders = store.getState;
 
-let hydrated = false;
+function sortByCreatedAtDesc(items: Order[]): Order[] {
+  return [...items].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+}
 
-/** À appeler une fois au démarrage : restaure les commandes passées avant fermeture de l'app. */
+let hydrated = false;
+let unsubscribeQuery: (() => void) | null = null;
+let scopeKey: string | null = null;
+
+/**
+ * Portée des commandes visibles, alignée sur les Security Rules :
+ * - client  → uniquement ses propres commandes (customerId == moi)
+ * - vendeur → commandes contenant au moins un de ses produits (sellerIds contient moi)
+ * - livreur / admin → toute la collection (rôle métier "voit tout", cadré côté rules)
+ */
+function resubscribe() {
+  const account = getCurrentAccount();
+  const key = account ? `${account.role}:${account.id}` : null;
+  if (key === scopeKey) return;
+  scopeKey = key;
+
+  unsubscribeQuery?.();
+  unsubscribeQuery = null;
+
+  if (!account) {
+    store.setState([]);
+    return;
+  }
+
+  const target =
+    account.role === "client"
+      ? query(col(ORDERS_COLLECTION), where("customerId", "==", account.id))
+      : account.role === "seller"
+        ? query(col(ORDERS_COLLECTION), where("sellerIds", "array-contains", account.id))
+        : col(ORDERS_COLLECTION);
+
+  unsubscribeQuery = subscribeCollection<Order>(
+    target,
+    (items) => store.setState(sortByCreatedAtDesc(items)),
+    () => store.setState([])
+  );
+}
+
+/** À appeler une fois au démarrage : écoute les commandes Firestore en temps réel. */
 export async function hydrateOrderStore() {
   if (hydrated) return;
   hydrated = true;
-  const saved = await loadJSON<Order[]>(STORAGE_KEY, seed);
-  store.setState(saved);
-  store.subscribe(() => saveJSON(STORAGE_KEY, store.getState()));
+  resubscribe();
+  subscribeCurrentAccount(resubscribe);
 }
 
 /**
@@ -84,6 +133,12 @@ export function createOrder(input: {
   paymentMethod: Order["paymentMethod"];
   deliveryFee: number;
 }) {
+  const account = getCurrentAccount();
+  const now = new Date().toISOString();
+  const sellerIds = Array.from(
+    new Set(input.items.map((item) => item.sellerId).filter((id): id is string => Boolean(id)))
+  );
+
   const order: Order = {
     id: `ML${Date.now().toString().slice(-6)}`,
     items: input.items,
@@ -94,12 +149,20 @@ export function createOrder(input: {
     deliveryAddress: input.deliveryAddress,
     paymentMethod: input.paymentMethod,
     paymentStatus: "pending",
-    createdAt: new Date().toISOString(),
+    createdAt: now,
     deliveryCode: DEMO_DELIVERY_CODE,
     deliveryFee: input.deliveryFee,
+    customerId: account?.id,
+    sellerIds,
+    statusHistory: [{ status: "pending", at: now }],
   };
 
   store.setState((orders) => [order, ...orders]);
+
+  setDoc(docRef(ORDERS_COLLECTION, order.id), order).catch((error) => {
+    if (__DEV__) console.warn("[orderStore] createOrder failed:", error);
+  });
+
   return order;
 }
 
@@ -115,6 +178,13 @@ export function attachPayment(
         : order
     )
   );
+
+  updateDoc(docRef(ORDERS_COLLECTION, orderId), {
+    paymentStatus: payment.status,
+    paymentReference: payment.reference,
+  }).catch((error) => {
+    if (__DEV__) console.warn("[orderStore] attachPayment failed:", error);
+  });
 
   if (payment.status === "paid") {
     pushNotification({
@@ -133,11 +203,20 @@ export function attachPayment(
 
 /** Paiement refusé : la commande créée n'est pas honorée, on l'annule proprement. */
 export function cancelUnpaidOrder(orderId: string) {
+  const now = new Date().toISOString();
+
   store.setState((orders) =>
     orders.map((order) =>
       order.id === orderId ? { ...order, status: "cancelled" as OrderStatus } : order
     )
   );
+
+  updateDoc(docRef(ORDERS_COLLECTION, orderId), {
+    status: "cancelled",
+    statusHistory: arrayUnion({ status: "cancelled", at: now }),
+  }).catch((error) => {
+    if (__DEV__) console.warn("[orderStore] cancelUnpaidOrder failed:", error);
+  });
 }
 
 const STATUS_NOTIFICATION_MESSAGE: Record<OrderStatus, (order: Order) => string> = {
@@ -151,6 +230,7 @@ const STATUS_NOTIFICATION_MESSAGE: Record<OrderStatus, (order: Order) => string>
 
 export function updateOrderStatus(id: string, status: OrderStatus) {
   let updated: Order | undefined;
+  const now = new Date().toISOString();
 
   store.setState((orders) =>
     orders.map((order) => {
@@ -162,14 +242,35 @@ export function updateOrderStatus(id: string, status: OrderStatus) {
     })
   );
 
-  if (updated) {
-    const meta = STATUS_META[status];
-    pushNotification({
-      title: `${meta.icon} ${meta.label}`,
-      message: STATUS_NOTIFICATION_MESSAGE[status](updated),
-      type: status === "cancelled" ? "error" : status === "delivered" ? "success" : "info",
-    });
-  }
+  if (!updated) return;
+
+  updateDoc(docRef(ORDERS_COLLECTION, id), {
+    status,
+    statusHistory: arrayUnion({ status, at: now }),
+  }).catch((error) => {
+    if (__DEV__) console.warn("[orderStore] updateOrderStatus failed:", error);
+  });
+
+  const meta = STATUS_META[status];
+  pushNotification({
+    title: `${meta.icon} ${meta.label}`,
+    message: STATUS_NOTIFICATION_MESSAGE[status](updated),
+    type: status === "cancelled" ? "error" : status === "delivered" ? "success" : "info",
+    // Adressée au vrai client, même quand c'est le vendeur/livreur qui déclenche
+    // le changement depuis son propre appareil.
+    userId: updated.customerId,
+  });
+}
+
+/** Rattache un livreur à une commande (voir acceptOrder/acceptAvailableOrder dans deliveryStore). */
+export function assignDelivery(orderId: string, deliveryId: string) {
+  store.setState((orders) =>
+    orders.map((order) => (order.id === orderId ? { ...order, deliveryId } : order))
+  );
+
+  updateDoc(docRef(ORDERS_COLLECTION, orderId), { deliveryId }).catch((error) => {
+    if (__DEV__) console.warn("[orderStore] assignDelivery failed:", error);
+  });
 }
 
 export function getActiveDeliveryOrder() {

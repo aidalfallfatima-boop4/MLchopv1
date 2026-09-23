@@ -26,11 +26,14 @@ type Props = {
 
 export default function OrderTrackingScreen({ orderId, onBack }: Props) {
   const orders = useOrderStore();
-  const driver = useDriverPosition();
 
   const order = orderId
     ? orders.find((item) => item.id === orderId)
     : orders[0];
+
+  // Suit la position du livreur pour CETTE commande précise (Firestore côté
+  // client, GPS local si l'appareil est celui du livreur de cette mission).
+  const driver = useDriverPosition(order?.id ?? null);
 
   if (!order) {
     return (

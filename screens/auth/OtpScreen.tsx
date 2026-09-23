@@ -24,21 +24,26 @@ export default function OtpScreen({ role, onBack }: Props) {
   const theme = getRoleTheme(role);
   const draft = useRegistrationDraft();
   const [code, setCode] = useState("");
+  const [verifying, setVerifying] = useState(false);
 
-  function verify() {
-    const result = verifyRegistrationOtp(code.trim());
+  async function verify() {
+    setVerifying(true);
+    const result = await verifyRegistrationOtp(code.trim());
+    setVerifying(false);
 
     if (!result.success) {
       Alert.alert(
-        "Code incorrect",
+        result.reason === "registration_failed" ? "Inscription impossible" : "Code incorrect",
         result.reason === "no_draft"
           ? "Session d'inscription expirée, recommencez."
-          : `Code de démo : ${DEMO_OTP_CODE}`
+          : result.reason === "registration_failed"
+            ? result.message ?? "Une erreur est survenue."
+            : `Code de démo : ${DEMO_OTP_CODE}`
       );
       return;
     }
-    // Le compte est créé + la session ouverte dans verifyRegistrationOtp :
-    // App.tsx redirige automatiquement vers la bonne interface.
+    // Le compte Firebase est créé ; App.tsx redirige automatiquement vers la
+    // bonne interface dès que la session (onAuthStateChanged) se propage.
   }
 
   return (
@@ -64,8 +69,14 @@ export default function OtpScreen({ role, onBack }: Props) {
           style={styles.input}
         />
 
-        <TouchableOpacity style={[styles.cta, { backgroundColor: theme.primary }]} onPress={verify}>
-          <Text style={styles.ctaText}>VÉRIFIER ET CRÉER MON COMPTE</Text>
+        <TouchableOpacity
+          style={[styles.cta, { backgroundColor: theme.primary }, verifying && { opacity: 0.6 }]}
+          onPress={verify}
+          disabled={verifying}
+        >
+          <Text style={styles.ctaText}>
+            {verifying ? "CRÉATION EN COURS..." : "VÉRIFIER ET CRÉER MON COMPTE"}
+          </Text>
         </TouchableOpacity>
 
         <TouchableOpacity onPress={() => setCode(DEMO_OTP_CODE)}>

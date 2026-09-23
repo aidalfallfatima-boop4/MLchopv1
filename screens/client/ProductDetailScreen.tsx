@@ -12,7 +12,6 @@ import {
 
 import { useProductStore } from "../../store/productStore";
 import { addToCart } from "../../store/cartStore";
-import { useAccounts } from "../../store/authStore";
 import { useUserStore } from "../../store/userStore";
 import {
   addReview,
@@ -33,7 +32,6 @@ type Props = {
 
 export default function ProductDetailScreen({ productId, onBack, onOpenCart }: Props) {
   const products = useProductStore();
-  const accounts = useAccounts();
   const user = useUserStore();
   const favoriteIds = useFavoriteIds();
   const reviews = useReviewsForProduct(productId);
@@ -56,8 +54,7 @@ export default function ProductDetailScreen({ productId, onBack, onOpenCart }: P
   }
 
   const color = getCategoryColor(product.category);
-  const seller = accounts.find((account) => account.id === product.sellerId);
-  const sellerName = seller?.shopName || seller?.fullName || "ML CHOP";
+  const sellerName = product.sellerName || "ML CHOP";
   const available = (product.stock ?? 1) > 0 && product.active !== false;
   const avgRating = getAverageRating(product.id);
   const favorite = isFavorite(product.id, favoriteIds);

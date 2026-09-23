@@ -1,0 +1,214 @@
+rules_version = '2';
+
+// Security Rules ML CHOP — voir CLAUDE.md/AGENTS.md pour le contexte projet.
+// Principe : jamais de "allow read, write: if true". Chaque collection est
+// scopée par rôle (users/{uid}.role) et, quand pertinent, par propriétaire.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function myUid() {
+      return request.auth.uid;
+    }
+
+    function myAccount() {
+      return get(/databases/$(database)/documents/users/$(myUid())).data;
+    }
+
+    function myRole() {
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(myUid()))
+        ? myAccount().role
+        : null;
+    }
+
+    function isAdmin() {
+      return myRole() == 'admin';
+    }
+
+    function isDemoAccount() {
+      return request.auth.token.email in ['22365112233@mlchop.app', '22377001122@mlchop.app'];
+    }
+
+    function changedOnly(fields) {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(fields);
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && myUid() == uid;
+    }
+
+    // ---------------- users ----------------
+    // Un utilisateur lit/écrit son propre profil ; l'admin lit/écrit tout le
+    // monde. Personne (y compris soi-même) ne peut changer son rôle ou son
+    // statut d'approbation directement — seul l'admin le peut.
+    match /users/{uid} {
+      allow get: if isOwner(uid) || isAdmin();
+      allow list: if isAdmin();
+
+      // Un client est actif d'office ; un vendeur/livreur démarre en attente de
+      // validation admin — sauf les 2 comptes de démo (bouton "Connexion rapide"),
+      // reconnus par l'email Auth synthétisé depuis DEMO_PHONES (constants/config.ts).
+      allow create: if isOwner(uid)
+        && request.resource.data.role in ['client', 'seller', 'delivery']
+        && (request.resource.data.status == 'pending_approval'
+            || (request.resource.data.status == 'active'
+                && (request.resource.data.role == 'client' || isDemoAccount())));
+
+      allow update: if isAdmin()
+        || (isOwner(uid)
+            && request.resource.data.role == resource.data.role
+            && request.resource.data.status == resource.data.status);
+
+      allow delete: if isAdmin();
+    }
+
+    // ---------------- products ----------------
+    // Catalogue lisible par tout compte connecté. Un vendeur ne gère que ses
+    // propres produits (et ne peut pas se réassigner le produit d'un autre).
+    match /products/{productId} {
+      allow read: if isSignedIn();
+
+      allow create: if isAdmin()
+        || (isSignedIn() && myRole() == 'seller' && request.resource.data.sellerId == myUid());
+
+      allow update: if isAdmin()
+        || (isSignedIn() && myRole() == 'seller'
+            && resource.data.sellerId == myUid()
+            && request.resource.data.sellerId == resource.data.sellerId);
+
+      allow delete: if isAdmin()
+        || (isSignedIn() && myRole() == 'seller' && resource.data.sellerId == myUid());
+    }
+
+    // ---------------- categories ----------------
+    match /categories/{categoryId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // ---------------- stockMovements ----------------
+    // Historique factuel : jamais modifié ni supprimé après coup.
+    match /stockMovements/{id} {
+      allow read: if isAdmin() || (isSignedIn() && myRole() == 'seller' && resource.data.userId == myUid());
+      allow create: if isSignedIn() && myRole() in ['seller', 'admin'] && request.resource.data.userId == myUid();
+      allow update, delete: if false;
+    }
+
+    // ---------------- orders ----------------
+    // client  → uniquement ses commandes ; vendeur → commandes contenant un de
+    // ses produits ; livreur → toutes (pour voir les missions disponibles) mais
+    // ne peut écrire que sur les siennes ou une non assignée ; admin → tout.
+    match /orders/{orderId} {
+      allow read: if isAdmin()
+        || (isSignedIn() && resource.data.customerId == myUid())
+        || (isSignedIn() && myRole() == 'seller' && myUid() in resource.data.sellerIds)
+        || (isSignedIn() && myRole() == 'delivery');
+
+      // Une commande naît toujours "en attente" et non payée : impossible de
+      // créer directement une commande "livrée/payée" depuis la console du navigateur.
+      allow create: if isSignedIn()
+        && request.resource.data.customerId == myUid()
+        && request.resource.data.status == 'pending'
+        && request.resource.data.paymentStatus == 'pending';
+
+      // Chaque rôle ne peut toucher QUE les champs de son étape du parcours
+      // (voir store/orderStore.ts) : articles, prix et client restent figés.
+      allow update: if isAdmin()
+        // client : résultat du paiement (attachPayment) ou annulation d'une
+        // commande impayée (cancelUnpaidOrder), tant qu'elle est en attente.
+        || (isSignedIn() && resource.data.customerId == myUid()
+            && resource.data.status == 'pending'
+            && changedOnly(['paymentStatus', 'paymentReference', 'status', 'statusHistory'])
+            && request.resource.data.status in ['pending', 'cancelled'])
+        // vendeur : avancement du statut (SellerOrders).
+        || (isSignedIn() && myRole() == 'seller'
+            && myUid() in resource.data.sellerIds
+            && changedOnly(['status', 'statusHistory']))
+        // livreur : prise en charge d'une commande libre ou suivi de la sienne.
+        || (isSignedIn() && myRole() == 'delivery'
+            && (resource.data.get('deliveryId', null) == null || resource.data.get('deliveryId', null) == myUid())
+            && request.resource.data.get('deliveryId', null) in [null, myUid()]
+            && changedOnly(['status', 'statusHistory', 'deliveryId']));
+
+      allow delete: if isAdmin();
+    }
+
+    // ---------------- deliveryTracking ----------------
+    // Position GPS temps réel du livreur pour une commande. Écrite par le
+    // livreur assigné ; lue par ce livreur, le client concerné et l'admin.
+    match /deliveryTracking/{orderId} {
+      function order() {
+        return get(/databases/$(database)/documents/orders/$(orderId)).data;
+      }
+
+      allow read: if isAdmin()
+        || (isSignedIn() && order().customerId == myUid())
+        || (isSignedIn() && order().get('deliveryId', null) == myUid());
+
+      allow write: if isSignedIn() && myRole() == 'delivery' && order().get('deliveryId', null) == myUid();
+    }
+
+    // ---------------- payments ----------------
+    // Le paiement simulé est aujourd'hui stocké dans orders.paymentStatus/
+    // paymentReference (pas de collection séparée écrite par le client). Règle
+    // prête si "payments" est utilisée plus tard (ex : par une Cloud Function).
+    match /payments/{id} {
+      allow read: if isAdmin() || (isSignedIn() && resource.data.customerId == myUid());
+      allow write: if isAdmin();
+    }
+
+    // ---------------- cart / favorites ----------------
+    // Un doc par utilisateur (id du doc = uid) : strictement privé.
+    match /cart/{uid} {
+      allow read, write: if isOwner(uid);
+    }
+
+    match /favorites/{uid} {
+      allow read, write: if isOwner(uid);
+    }
+
+    // ---------------- notifications ----------------
+    match /notifications/{id} {
+      allow read: if isSignedIn() && resource.data.userId == myUid();
+      allow create: if isSignedIn();
+      allow update, delete: if isSignedIn() && resource.data.userId == myUid();
+    }
+
+    // ---------------- reviews ----------------
+    // Avis publics (catalogue), mais seul l'auteur (ou l'admin) peut modifier/supprimer.
+    match /reviews/{id} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && request.resource.data.authorId == myUid();
+      allow update, delete: if isAdmin() || (isSignedIn() && resource.data.authorId == myUid());
+    }
+
+    // ---------------- shops ----------------
+    // Doc id = uid du vendeur (comme users/cart/favorites).
+    match /shops/{sellerId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin() || (isSignedIn() && myUid() == sellerId && myRole() == 'seller');
+    }
+
+    // ---------------- messages / conversations ----------------
+    match /conversations/{conversationId} {
+      allow read, update: if isSignedIn() && myUid() in resource.data.participantIds;
+      allow create: if isSignedIn() && myUid() in request.resource.data.participantIds;
+      allow delete: if isAdmin();
+    }
+
+    match /messages/{messageId} {
+      allow read: if isAdmin()
+        || (isSignedIn() && (resource.data.senderId == myUid() || resource.data.recipientId == myUid()));
+      allow create: if isSignedIn() && request.resource.data.senderId == myUid();
+      allow update, delete: if isAdmin();
+    }
+
+    // ---------------- adminLogs ----------------
+    match /adminLogs/{id} {
+      allow read, write: if isAdmin();
+    }
+  }
+}

@@ -1,9 +1,13 @@
+import { useEffect } from "react";
+
 import { createStore } from "./createStore";
 import {
+  assignDelivery,
   getOrders,
   updateOrderStatus,
   useOrderStore,
 } from "./orderStore";
+import { getCurrentAccount, useCurrentAccount } from "./authStore";
 import { MissionPhase, Order } from "../types";
 import { AVAILABLE_DELIVERY_STATUSES } from "../utils/orderLabels";
 import {
@@ -12,6 +16,9 @@ import {
   watchPosition,
 } from "../services/location";
 import { pushNotification } from "./notificationStore";
+import { deleteDoc, docRef, setDoc, subscribeDoc } from "../services/firebase/firestore";
+
+const DELIVERY_TRACKING_COLLECTION = "deliveryTracking";
 
 const missionId = createStore<string | null>(null);
 
@@ -36,7 +43,6 @@ const driverPosition = createStore<DriverPositionState>({
   updatedAt: null,
 });
 
-export const useDriverPosition = driverPosition.useStore;
 export const getDriverPosition = driverPosition.getState;
 
 let activeSubscription: LocationSubscription | null = null;
@@ -49,11 +55,19 @@ export async function startDriverTracking(): Promise<DriverGeoStatus> {
   driverPosition.setState((current) => ({ ...current, status: "requesting" }));
 
   const subscription = await watchPosition((position) => {
-    driverPosition.setState({
-      status: "tracking",
-      position,
-      updatedAt: Date.now(),
-    });
+    const updatedAt = Date.now();
+    driverPosition.setState({ status: "tracking", position, updatedAt });
+
+    // Publie la position pour que le CLIENT (autre appareil) puisse suivre la
+    // livraison en direct — voir useDriverPosition() plus bas.
+    const orderId = missionId.getState();
+    if (orderId) {
+      setDoc(docRef(DELIVERY_TRACKING_COLLECTION, orderId), { position, updatedAt }).catch(
+        (error) => {
+          if (__DEV__) console.warn("[deliveryStore] tracking publish failed:", error);
+        }
+      );
+    }
   });
 
   if (!subscription) {
@@ -72,9 +86,74 @@ export function stopDriverTracking() {
 }
 
 export function clearMission() {
+  const orderId = missionId.getState();
+  if (orderId) {
+    deleteDoc(docRef(DELIVERY_TRACKING_COLLECTION, orderId)).catch(() => {});
+  }
   missionId.setState(null);
   missionPhase.setState("assigned");
   stopDriverTracking();
+}
+
+// ---------------------------------------------------------------------------
+// Lecture de la position par un appareil qui n'est PAS le livreur (client,
+// vendeur, admin) : écoute Firestore plutôt que le GPS local de l'appareil.
+// ---------------------------------------------------------------------------
+
+const remoteDriverPosition = createStore<DriverPositionState>({
+  status: "idle",
+  position: null,
+  updatedAt: null,
+});
+
+let unsubscribeRemoteTracking: (() => void) | null = null;
+let trackedOrderId: string | null = null;
+
+function setTrackedOrder(orderId: string | null) {
+  if (orderId === trackedOrderId) return;
+  trackedOrderId = orderId;
+
+  unsubscribeRemoteTracking?.();
+  unsubscribeRemoteTracking = null;
+  remoteDriverPosition.setState({ status: "idle", position: null, updatedAt: null });
+
+  if (!orderId) return;
+
+  remoteDriverPosition.setState((current) => ({ ...current, status: "requesting" }));
+  unsubscribeRemoteTracking = subscribeDoc<{ position: PositionUpdate; updatedAt: number }>(
+    DELIVERY_TRACKING_COLLECTION,
+    orderId,
+    (doc) => {
+      remoteDriverPosition.setState(
+        doc
+          ? { status: "tracking", position: doc.position, updatedAt: doc.updatedAt }
+          : { status: "idle", position: null, updatedAt: null }
+      );
+    },
+    () => remoteDriverPosition.setState({ status: "denied", position: null, updatedAt: null })
+  );
+}
+
+/**
+ * Position à afficher pour une commande donnée : le GPS local si je suis le
+ * livreur en mission sur CETTE commande (comportement historique inchangé),
+ * sinon la position que ce livreur publie dans Firestore — vrai suivi
+ * multi-appareils (client sur son téléphone, livreur sur le sien).
+ */
+export function useDriverPosition(orderId?: string | null): DriverPositionState {
+  const account = useCurrentAccount();
+  const isMyOwnMission = account?.role === "delivery" && (!orderId || orderId === missionId.getState());
+
+  const local = driverPosition.useStore();
+  const remote = remoteDriverPosition.useStore();
+
+  useEffect(() => {
+    if (!isMyOwnMission) {
+      setTrackedOrder(orderId ?? null);
+    }
+  }, [isMyOwnMission, orderId]);
+
+  return isMyOwnMission ? local : remote;
 }
 
 /**
@@ -131,6 +210,8 @@ export function acceptOrder(orderId: string): Order | undefined {
   if (!order) return undefined;
 
   updateOrderStatus(orderId, "shipping");
+  const deliveryId = getCurrentAccount()?.id;
+  if (deliveryId) assignDelivery(orderId, deliveryId);
   missionId.setState(orderId);
   missionPhase.setState("assigned");
   void startDriverTracking();
@@ -160,6 +241,8 @@ export function acceptAvailableOrder(): Order | undefined {
   }
 
   updateOrderStatus(next.id, "shipping");
+  const deliveryId = getCurrentAccount()?.id;
+  if (deliveryId) assignDelivery(next.id, deliveryId);
   missionId.setState(next.id);
   missionPhase.setState("assigned");
   void startDriverTracking();

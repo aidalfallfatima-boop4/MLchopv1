@@ -9,6 +9,10 @@ export type Product = {
   description?: string;
   stock?: number;
   sellerId?: string;
+  /** Dénormalisé depuis users/{sellerId}.shopName au moment de la création :
+   * évite au client d'avoir à lire la collection "users" (réservée admin) juste
+   * pour afficher le nom de la boutique sur la fiche produit. */
+  sellerName?: string;
   /** false = retiré de la vente par le vendeur (masqué côté client) */
   active?: boolean;
   popular?: boolean;
@@ -32,6 +36,11 @@ export type PaymentMethod = "orange_money" | "moov_money" | "wave" | "card" | "c
 /** Statut du paiement associé à une commande — simulation locale, pas de vraie transaction. */
 export type PaymentStatus = "pending" | "paid" | "failed";
 
+export type OrderStatusEvent = {
+  status: OrderStatus;
+  at: string;
+};
+
 export type Order = {
   id: string;
   items: CartItem[];
@@ -46,6 +55,14 @@ export type Order = {
   createdAt: string;
   deliveryCode?: string;
   deliveryFee?: number;
+  /** uid du client (Firebase Auth) — absent seulement pour les commandes seed locales pré-Firebase. */
+  customerId?: string;
+  /** uid(s) des vendeurs des produits de cette commande — sert aux Security Rules. */
+  sellerIds?: string[];
+  /** uid du livreur assigné, défini par acceptOrder(). */
+  deliveryId?: string;
+  /** Historique des changements de statut ("Une commande doit conserver... l'historique des changements"). */
+  statusHistory?: OrderStatusEvent[];
 };
 
 export type ChatMessage = {
@@ -72,12 +89,11 @@ export type Vehicle = "Moto" | "Voiture" | "Tricycle";
 export type ApprovalStatus = "pending_approval" | "active" | "rejected";
 
 export type Account = {
+  /** = uid Firebase Auth (et id du doc Firestore users/{id}). */
   id: string;
   role: Exclude<Role, null>;
   fullName: string;
   phone: string;
-  /** MVP local uniquement : jamais envoyé/affiché tel quel, remplacé par une vraie auth backend plus tard. */
-  password: string;
   shopName?: string;
   vehicle?: Vehicle;
   status: ApprovalStatus;
