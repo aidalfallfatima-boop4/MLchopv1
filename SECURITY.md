@@ -7,7 +7,7 @@ Dans le périmètre :
 - l'application web https://mlchop-31688.web.app ;
 - les **Security Rules** Firestore / Storage (`firestore.rules`, `storage.rules`) et les données
   du projet Firebase `mlchop-31688` accessibles avec un compte testeur ;
-- le code de ce dépôt (https://github.com/ehekbealberto-prog/mlv1).
+- le code de ce dépôt (https://github.com/aidalfallfatima-boop4/MLchopv1-).
 
 Exemples de ce qui nous intéresse : lire ou modifier les données d'un autre utilisateur, s'attribuer
 un rôle (admin, vendeur/livreur validé), modifier un prix, un total ou un statut de commande
@@ -20,7 +20,7 @@ les testeurs).
 ## Signaler une faille (en privé)
 
 - **GitHub, avis de sécurité privé** :
-  https://github.com/ehekbealberto-prog/mlv1/security/advisories/new
+  https://github.com/aidalfallfatima-boop4/MLchopv1-/security/advisories/new
 - ou **dans l'app** : bouton 🐞 → type **« Faille de sécurité »** (visible uniquement par l'admin).
 
 Merci de **ne pas** ouvrir d'issue publique ni de divulguer la faille avant sa correction.
