@@ -9,25 +9,16 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  View,
 } from "react-native";
 
 import { Role } from "../../types";
 import { getRoleTheme } from "../../constants/roleTheme";
-import { DEMO_PHONES } from "../../constants/config";
-import { login, loginDemo } from "../../store/authStore";
+import { login } from "../../store/authStore";
 
 type Props = {
   role: Exclude<Role, null>;
   onBack: () => void;
   onRegister: () => void;
-};
-
-const DEMO_BY_ROLE: Record<Exclude<Role, null>, string> = {
-  client: DEMO_PHONES.client,
-  seller: DEMO_PHONES.seller,
-  delivery: DEMO_PHONES.delivery,
-  admin: DEMO_PHONES.admin,
 };
 
 export default function LoginScreen({ role, onBack, onRegister }: Props) {
@@ -56,17 +47,6 @@ export default function LoginScreen({ role, onBack, onRegister }: Props) {
             : result.message ?? "Une erreur est survenue."
       );
       return;
-    }
-  }
-
-  async function useDemoAccount() {
-    setPhone(DEMO_BY_ROLE[role]);
-    setLoading(true);
-    const result = await loginDemo(role);
-    setLoading(false);
-
-    if (!result.success) {
-      Alert.alert("Connexion impossible", result.message ?? "Réessayez dans un instant.");
     }
   }
 
@@ -118,20 +98,6 @@ export default function LoginScreen({ role, onBack, onRegister }: Props) {
               </Text>
             </TouchableOpacity>
           ) : null}
-
-          <View style={styles.demoCard}>
-            <Text style={styles.demoTitle}>🎬 Compte de démonstration</Text>
-            <Text style={styles.demoPhone}>{DEMO_BY_ROLE[role]}</Text>
-            <TouchableOpacity
-              style={[styles.demoButton, { borderColor: theme.primary }, loading && { opacity: 0.6 }]}
-              onPress={useDemoAccount}
-              disabled={loading}
-            >
-              <Text style={[styles.demoButtonText, { color: theme.primary }]}>
-                {loading ? "Connexion..." : "Connexion rapide (démo)"}
-              </Text>
-            </TouchableOpacity>
-          </View>
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -165,21 +131,4 @@ const styles = StyleSheet.create({
   ctaText: { color: "#FFFFFF", fontWeight: "900", fontSize: 14 },
   registerLink: { marginTop: 18, alignItems: "center" },
   registerText: { fontSize: 13, color: "#4B5563" },
-  demoCard: {
-    marginTop: 30,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 18,
-    padding: 16,
-    alignItems: "center",
-  },
-  demoTitle: { fontWeight: "900", fontSize: 13, color: "#111827" },
-  demoPhone: { marginTop: 4, fontSize: 13, color: "#6B7280", fontWeight: "700" },
-  demoButton: {
-    marginTop: 12,
-    borderWidth: 1.5,
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-  },
-  demoButtonText: { fontWeight: "900", fontSize: 12 },
 });

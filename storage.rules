@@ -19,13 +19,20 @@ service firebase.storage {
       return request.resource.size < 5 * 1024 * 1024;
     }
 
-    // products/{productId}/{fileName} — lecture publique (catalogue), écriture
-    // laissée à tout compte connecté (le contrôle fin "c'est bien mon produit"
-    // vit dans firestore.rules côté doc produit ; Storage ne connaît pas
-    // l'auteur du produit sans upload d'un Cloud Function-vérifié token).
+    function isAdmin() {
+      return isSignedIn()
+        && firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    // products/{productId}/{fileName} — lecture publique (catalogue) ; écriture
+    // réservée au vendeur propriétaire du doc Firestore products/{productId}
+    // (lecture croisée Firestore depuis Storage) ou à l'admin.
     match /products/{productId}/{fileName} {
       allow read: if true;
-      allow write: if isSignedIn() && isImage() && isUnder5MB();
+      allow write: if isSignedIn()
+        && (firestore.get(/databases/(default)/documents/products/$(productId)).data.sellerId == request.auth.uid
+            || isAdmin())
+        && (request.resource == null || (isImage() && isUnder5MB()));
     }
 
     // profiles/{uid}/{fileName} — seul le propriétaire peut écrire sa propre photo.

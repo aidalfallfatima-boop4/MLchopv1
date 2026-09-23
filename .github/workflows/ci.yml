@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Typecheck + build web
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Valeurs factices : le build doit compiler sans la vraie config Firebase
+      # (la vraie vit dans .env, jamais commité).
+      EXPO_PUBLIC_FIREBASE_API_KEY: ci-placeholder
+      EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN: ci-placeholder.firebaseapp.com
+      EXPO_PUBLIC_FIREBASE_PROJECT_ID: ci-placeholder
+      EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET: ci-placeholder.appspot.com
+      EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: "0"
+      EXPO_PUBLIC_FIREBASE_APP_ID: ci-placeholder
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npx expo export --platform web
+      # Les Security Rules sont testées contre le vrai projet avec
+      # scripts/test-firestore-rules.cjs (voir TESTS.md) : il faut le mot de
+      # passe admin, donc ce test se lance en local, pas dans la CI publique.

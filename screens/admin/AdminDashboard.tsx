@@ -14,6 +14,7 @@ import { useProductStore } from "../../store/productStore";
 import { formatPrice } from "../../utils/formatPrice";
 import { getRoleTheme } from "../../constants/roleTheme";
 import { logoutAccount } from "../../store/authStore";
+import { useFeedbackList } from "../../store/feedbackStore";
 
 const theme = getRoleTheme("admin");
 
@@ -22,12 +23,15 @@ type Props = {
   onUsers: () => void;
   onProducts: () => void;
   onOrders: () => void;
+  onFeedback: () => void;
 };
 
-export default function AdminDashboard({ onApprovals, onUsers, onProducts, onOrders }: Props) {
+export default function AdminDashboard({ onApprovals, onUsers, onProducts, onOrders, onFeedback }: Props) {
   const accounts = useAccounts();
   const orders = useOrderStore();
   const products = useProductStore();
+  const feedback = useFeedbackList();
+  const newFeedbackCount = feedback.filter((item) => item.status === "new").length;
 
   const pending = accounts.filter((account) => account.status === "pending_approval");
   const revenue = orders
@@ -62,6 +66,12 @@ export default function AdminDashboard({ onApprovals, onUsers, onProducts, onOrd
           <StatCard icon="🛍️" value={String(products.length)} label="Produits" onPress={onProducts} />
           <StatCard icon="📦" value={String(orders.length)} label="Commandes" onPress={onOrders} />
           <StatCard icon="💰" value={formatPrice(revenue)} label="Volume total" small />
+          <StatCard
+            icon="🐞"
+            value={String(newFeedbackCount)}
+            label="Retours testeurs (nouveaux)"
+            onPress={onFeedback}
+          />
         </View>
 
         <Text style={styles.section}>Accès rapide</Text>
@@ -69,6 +79,7 @@ export default function AdminDashboard({ onApprovals, onUsers, onProducts, onOrd
         <MenuRow icon="👥" title="Utilisateurs" onPress={onUsers} />
         <MenuRow icon="🛍️" title="Produits" onPress={onProducts} />
         <MenuRow icon="📦" title="Commandes" onPress={onOrders} />
+        <MenuRow icon="🐞" title="Retours testeurs" onPress={onFeedback} />
       </ScrollView>
     </SafeAreaView>
   );

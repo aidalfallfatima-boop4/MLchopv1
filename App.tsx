@@ -13,6 +13,7 @@ import FavoritesScreen from "./screens/client/FavoritesScreen";
 import ProductDetailScreen from "./screens/client/ProductDetailScreen";
 import NotificationToast from "./components/NotificationToast";
 import BottomNavigation from "./components/BottomNavigation";
+import FeedbackButton from "./components/FeedbackButton";
 import { getRoleTheme } from "./constants/roleTheme";
 import { getCartCount, useCartStore } from "./store/cartStore";
 import SellerDashboard from "./screens/seller/SellerDashboard";
@@ -31,6 +32,7 @@ import AdminApprovals from "./screens/admin/AdminApprovals";
 import AdminUsers from "./screens/admin/AdminUsers";
 import AdminProducts from "./screens/admin/AdminProducts";
 import AdminOrders from "./screens/admin/AdminOrders";
+import AdminFeedback from "./screens/admin/AdminFeedback";
 import { useUserStore } from "./store/userStore";
 import { hydrateAuthStore } from "./store/authStore";
 import { hydrateCartStore } from "./store/cartStore";
@@ -39,6 +41,7 @@ import { hydrateProductStore } from "./store/productStore";
 import { hydrateNotificationStore } from "./store/notificationStore";
 import { hydrateReviewStore } from "./store/reviewStore";
 import { hydrateFavoriteStore } from "./store/favoriteStore";
+import { useFeedbackList } from "./store/feedbackStore";
 
 type ClientView =
   | "home"
@@ -58,7 +61,9 @@ const SELLER_TABS: SellerView[] = ["dashboard", "products", "orders", "revenue",
 type DeliveryView = "dashboard" | "available" | "active" | "earnings" | "history" | "profile";
 
 const DELIVERY_TABS: DeliveryView[] = ["dashboard", "available", "active", "history", "profile"];
-type AdminView = "dashboard" | "approvals" | "users" | "products" | "orders";
+type AdminView = "dashboard" | "approvals" | "users" | "products" | "orders" | "feedback";
+
+const ADMIN_TABS: AdminView[] = ["dashboard", "approvals", "orders", "feedback", "users"];
 
 export default function App() {
   const [ready, setReady] = useState(false);
@@ -71,6 +76,8 @@ export default function App() {
   const [sellerView, setSellerView] = useState<SellerView>("dashboard");
   const [deliveryView, setDeliveryView] = useState<DeliveryView>("dashboard");
   const [adminView, setAdminView] = useState<AdminView>("dashboard");
+  // Vide pour tout rôle non admin (l'abonnement Firestore n'est ouvert que pour l'admin).
+  const feedbackList = useFeedbackList();
 
   useEffect(() => {
     Promise.all([
@@ -94,11 +101,16 @@ export default function App() {
   }
 
   let content: React.ReactNode;
+  /** Vue courante (ex : "client:cart") jointe aux retours testeurs ; null = écrans d'auth. */
+  let feedbackScreen: string | null = null;
+  let hasTabs = false;
 
   if (!user.role) {
     content = <AuthNavigator />;
   } else if (user.role === "client") {
     const showTabs = CLIENT_TABS.includes(clientView);
+    feedbackScreen = `client:${clientView}`;
+    hasTabs = showTabs;
     content = (
       <>
         <View style={{ flex: 1 }}>
@@ -140,6 +152,8 @@ export default function App() {
       </>
     );
   } else if (user.role === "seller") {
+    feedbackScreen = `seller:${sellerView}`;
+    hasTabs = SELLER_TABS.includes(sellerView);
     content = (
       <View style={{ flex: 1 }}>
         <SellerNavigator currentView={sellerView} onChangeView={setSellerView} />
@@ -160,6 +174,8 @@ export default function App() {
       </View>
     );
   } else if (user.role === "delivery") {
+    feedbackScreen = `delivery:${deliveryView}`;
+    hasTabs = DELIVERY_TABS.includes(deliveryView);
     content = (
       <View style={{ flex: 1 }}>
         <DeliveryNavigator currentView={deliveryView} onChangeView={setDeliveryView} />
@@ -180,12 +196,40 @@ export default function App() {
       </View>
     );
   } else {
-    content = <AdminNavigator currentView={adminView} onChangeView={setAdminView} />;
+    feedbackScreen = `admin:${adminView}`;
+    hasTabs = ADMIN_TABS.includes(adminView);
+    content = (
+      <View style={{ flex: 1 }}>
+        <AdminNavigator currentView={adminView} onChangeView={setAdminView} />
+        {hasTabs ? (
+          <BottomNavigation
+            accentColor={getRoleTheme("admin").primary}
+            active={adminView}
+            onChange={(key) => setAdminView(key as AdminView)}
+            tabs={[
+              { key: "dashboard", icon: "🏠", label: "Accueil" },
+              { key: "approvals", icon: "✅", label: "Validations" },
+              { key: "orders", icon: "📦", label: "Commandes" },
+              {
+                key: "feedback",
+                icon: "🐞",
+                label: "Retours",
+                badge: feedbackList.filter((item) => item.status === "new").length,
+              },
+              { key: "users", icon: "👥", label: "Comptes" },
+            ]}
+          />
+        ) : null}
+      </View>
+    );
   }
 
   return (
     <View style={styles.root}>
-      <View style={styles.frame}>{content}</View>
+      <View style={styles.frame}>
+        {content}
+        {feedbackScreen ? <FeedbackButton screen={feedbackScreen} aboveTabs={hasTabs} /> : null}
+      </View>
     </View>
   );
 }
@@ -352,6 +396,8 @@ function AdminNavigator({
       return <AdminProducts onBack={() => onChangeView("dashboard")} />;
     case "orders":
       return <AdminOrders onBack={() => onChangeView("dashboard")} />;
+    case "feedback":
+      return <AdminFeedback onBack={() => onChangeView("dashboard")} />;
     default:
       return (
         <AdminDashboard
@@ -359,6 +405,7 @@ function AdminNavigator({
           onUsers={() => onChangeView("users")}
           onProducts={() => onChangeView("products")}
           onOrders={() => onChangeView("orders")}
+          onFeedback={() => onChangeView("feedback")}
         />
       );
   }

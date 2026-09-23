@@ -47,9 +47,8 @@ export function subscribeCollection<T extends DocumentData>(
       onData(items);
     },
     (error) => {
-      if (__DEV__) {
-        console.warn(`[firestore] subscription error:`, error.message);
-      }
+      // Toujours journalisé (y compris en prod web où __DEV__ est faux).
+      console.error(`[firestore] subscription error:`, error.code, error.message);
       onError?.(error);
     }
   );
@@ -68,9 +67,7 @@ export function subscribeDoc<T extends DocumentData>(
       onData(snap.exists() ? ({ id: snap.id, ...snap.data() } as T & { id: string }) : null);
     },
     (error) => {
-      if (__DEV__) {
-        console.warn(`[firestore] doc subscription error:`, error.message);
-      }
+      console.error(`[firestore] doc subscription error (${path}/${id}):`, error.code, error.message);
       onError?.(error);
     }
   );

@@ -59,8 +59,6 @@ export type RegisterInput = {
   password: string;
   shopName?: string;
   vehicle?: Vehicle;
-  /** Comptes de démo créés déjà "actifs" (pas d'attente de validation admin). */
-  forceActive?: boolean;
 };
 
 export async function registerAccount(input: RegisterInput): Promise<Account> {
@@ -74,7 +72,8 @@ export async function registerAccount(input: RegisterInput): Promise<Account> {
     phone: input.phone,
     shopName: input.shopName,
     vehicle: input.vehicle,
-    status: input.forceActive || input.role === "client" ? "active" : "pending_approval",
+    // Vendeurs/livreurs attendent la validation d'un admin ; les clients sont actifs d'emblée.
+    status: input.role === "client" ? "active" : "pending_approval",
     createdAt: now,
     updatedAt: now,
   };
@@ -89,20 +88,11 @@ export async function signInAccount(phone: string, password: string): Promise<Ac
   const account = await fetchAccount(credential.user.uid);
 
   if (!account) {
-    // Compte Auth existe mais le doc Firestore users/{uid} a disparu : cas
-    // anormal (ex : supprimé manuellement dans la console) — on le recrée
-    // en "client" par défaut plutôt que de laisser l'app dans un état cassé.
-    const now = new Date().toISOString();
-    const fallback: UserDoc = {
-      role: "client",
-      fullName: credential.user.email ?? "Client ML CHOP",
-      phone,
-      status: "active",
-      createdAt: now,
-      updatedAt: now,
-    };
-    await setDoc(docRef(USERS_COLLECTION, credential.user.uid), fallback);
-    return docToAccount(credential.user.uid, fallback);
+    // Compte Auth existe mais le doc Firestore users/{uid} est introuvable :
+    // on ne le recrée SURTOUT PAS (un vendeur/admin serait silencieusement
+    // rétrogradé en "client"). On ferme la session et on remonte l'anomalie.
+    await signOut(auth).catch((error) => console.error("[auth] signOut après profil manquant :", error));
+    throw Object.assign(new Error("Profil utilisateur introuvable."), { code: "profile-missing" });
   }
 
   return account;

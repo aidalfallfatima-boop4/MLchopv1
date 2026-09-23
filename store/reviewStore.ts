@@ -2,6 +2,7 @@ import { createStore } from "./createStore";
 import { Review } from "../types";
 import { getCurrentAccount, subscribeCurrentAccount } from "./authStore";
 import { col, docRef, setDoc, subscribeCollection } from "../services/firebase/firestore";
+import { reportSubscriptionError, reportWriteError } from "../services/firebase/writeError";
 
 const REVIEWS_COLLECTION = "reviews";
 
@@ -21,9 +22,14 @@ function resubscribe() {
   currentUid = uid;
 
   unsubscribeQuery?.();
-  unsubscribeQuery = subscribeCollection<Review>(col(REVIEWS_COLLECTION), (items) => {
-    store.setState([...items].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)));
-  });
+  unsubscribeQuery = subscribeCollection<Review>(
+    col(REVIEWS_COLLECTION),
+    (items) => {
+      store.setState([...items].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)));
+    },
+    // Erreur d'écoute : on garde les derniers avis connus.
+    (error) => reportSubscriptionError("reviewStore", error)
+  );
 }
 
 /** À appeler une fois au démarrage : écoute les avis produits en temps réel (lecture publique). */
@@ -58,7 +64,8 @@ export function addReview(input: {
     ...review,
     authorId: account?.id ?? null,
   }).catch((error) => {
-    if (__DEV__) console.warn("[reviewStore] addReview failed:", error);
+    store.setState((current) => current.filter((item) => item.id !== review.id));
+    reportWriteError("reviewStore.addReview", error);
   });
 
   return review;

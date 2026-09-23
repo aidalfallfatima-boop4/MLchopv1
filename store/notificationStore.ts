@@ -12,6 +12,7 @@ import {
   updateDoc,
   where,
 } from "../services/firebase/firestore";
+import { reportSubscriptionError, reportWriteError } from "../services/firebase/writeError";
 
 const NOTIFICATIONS_COLLECTION = "notifications";
 const MAX_NOTIFICATIONS = 30;
@@ -35,6 +36,11 @@ export const getNotifications = store.getState;
 let hydrated = false;
 let unsubscribeQuery: (() => void) | null = null;
 let currentUid: string | null = null;
+/** Notifications purement locales (erreurs d'écriture, alertes réseau…) : jamais
+ * écrites dans Firestore, donc ré-injectées à chaque snapshot pour ne pas
+ * disparaître dès que le listener pousse la liste serveur. */
+let localOnly: AppNotification[] = [];
+let lastRemote: AppNotification[] = [];
 
 function sortByCreatedAtDesc(items: AppNotification[]): AppNotification[] {
   return [...items].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
@@ -47,26 +53,38 @@ function resubscribe() {
 
   unsubscribeQuery?.();
   unsubscribeQuery = null;
+  localOnly = [];
+  lastRemote = [];
   store.setState([]);
 
   if (!uid) return;
 
   const target = query(col(NOTIFICATIONS_COLLECTION), where("userId", "==", uid), limit(200));
 
-  unsubscribeQuery = subscribeCollection<NotificationDoc>(target, (items) => {
-    store.setState(
-      sortByCreatedAtDesc(
-        items.slice(0, MAX_NOTIFICATIONS).map(({ id, title, message, type, createdAt, read }) => ({
-          id,
-          title,
-          message,
-          type,
-          createdAt,
-          read,
-        }))
-      )
-    );
-  });
+  unsubscribeQuery = subscribeCollection<NotificationDoc>(
+    target,
+    (items) => {
+      lastRemote = items.map(({ id, title, message, type, createdAt, read }) => ({
+        id,
+        title,
+        message,
+        type,
+        createdAt,
+        read,
+      }));
+      renderMerged();
+    },
+    // Erreur d'écoute : on garde les notifications déjà affichées.
+    (error) => reportSubscriptionError("notificationStore", error)
+  );
+}
+
+function renderMerged() {
+  store.setState(sortByCreatedAtDesc([...localOnly, ...lastRemote]).slice(0, MAX_NOTIFICATIONS));
+}
+
+function isLocalOnly(id: string): boolean {
+  return localOnly.some((item) => item.id === id);
 }
 
 /** À appeler une fois au démarrage : écoute mes notifications Firestore en temps réel. */
@@ -75,6 +93,30 @@ export async function hydrateNotificationStore() {
   hydrated = true;
   resubscribe();
   subscribeCurrentAccount(resubscribe);
+}
+
+/**
+ * Notification 100% locale (jamais écrite dans Firestore) — utilisée pour les
+ * toasts d'erreur (voir services/firebase/writeError.ts). NotificationToast
+ * affiche automatiquement le dernier élément de ce store.
+ */
+export function pushLocalNotification(input: {
+  title: string;
+  message: string;
+  type?: NotificationType;
+}): AppNotification {
+  const notification: AppNotification = {
+    id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    title: input.title,
+    message: input.message,
+    type: input.type ?? "info",
+    createdAt: new Date().toISOString(),
+    read: false,
+  };
+
+  localOnly = [notification, ...localOnly].slice(0, MAX_NOTIFICATIONS);
+  store.setState((current) => sortByCreatedAtDesc([notification, ...current]).slice(0, MAX_NOTIFICATIONS));
+  return notification;
 }
 
 export function pushNotification(input: {
@@ -103,32 +145,53 @@ export function pushNotification(input: {
 
   if (targetUid) {
     const doc: NotificationDoc = { ...notification, userId: targetUid };
-    setDoc(docRef(NOTIFICATIONS_COLLECTION, notification.id), doc).catch((error) => {
-      if (__DEV__) console.warn("[notificationStore] pushNotification failed:", error);
-    });
+    setDoc(docRef(NOTIFICATIONS_COLLECTION, notification.id), doc).catch((error) =>
+      reportWriteError("notificationStore.pushNotification", error)
+    );
   }
 
   return notification;
 }
 
 export function markNotificationRead(id: string) {
+  const wasRead = store.getState().find((item) => item.id === id)?.read ?? false;
+  localOnly = localOnly.map((item) => (item.id === id ? { ...item, read: true } : item));
   store.setState((current) => current.map((item) => (item.id === id ? { ...item, read: true } : item)));
-  updateDoc(docRef(NOTIFICATIONS_COLLECTION, id), { read: true }).catch(() => {});
-}
+  if (isLocalOnly(id)) return;
 
-export function markAllNotificationsRead() {
-  const unreadIds = store.getState().filter((item) => !item.read).map((item) => item.id);
-  store.setState((current) => current.map((item) => ({ ...item, read: true })));
-  unreadIds.forEach((id) => {
-    updateDoc(docRef(NOTIFICATIONS_COLLECTION, id), { read: true }).catch(() => {});
+  updateDoc(docRef(NOTIFICATIONS_COLLECTION, id), { read: true }).catch((error) => {
+    store.setState((current) =>
+      current.map((item) => (item.id === id ? { ...item, read: wasRead } : item))
+    );
+    reportWriteError("notificationStore.markNotificationRead", error);
   });
 }
 
+export function markAllNotificationsRead() {
+  const unreadIds = store
+    .getState()
+    .filter((item) => !item.read && !isLocalOnly(item.id))
+    .map((item) => item.id);
+  localOnly = localOnly.map((item) => ({ ...item, read: true }));
+  store.setState((current) => current.map((item) => ({ ...item, read: true })));
+
+  Promise.all(
+    unreadIds.map((id) => updateDoc(docRef(NOTIFICATIONS_COLLECTION, id), { read: true }))
+  ).catch((error) => reportWriteError("notificationStore.markAllNotificationsRead", error));
+}
+
 export function clearNotifications() {
-  const ids = store.getState().map((item) => item.id);
+  const ids = store
+    .getState()
+    .filter((item) => !isLocalOnly(item.id))
+    .map((item) => item.id);
+  localOnly = [];
   store.setState([]);
-  ids.forEach((id) => {
-    deleteDoc(docRef(NOTIFICATIONS_COLLECTION, id)).catch(() => {});
+
+  Promise.all(ids.map((id) => deleteDoc(docRef(NOTIFICATIONS_COLLECTION, id)))).catch((error) => {
+    // Restaure la dernière liste serveur connue (docs non supprimés inclus).
+    renderMerged();
+    reportWriteError("notificationStore.clearNotifications", error);
   });
 }
 

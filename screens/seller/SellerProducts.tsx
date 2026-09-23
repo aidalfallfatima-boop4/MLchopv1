@@ -58,6 +58,13 @@ export default function SellerProducts({ onBack }: Props) {
       return;
     }
 
+    // Les Security Rules exigent des entiers (FCFA sans centimes) : on refuse
+    // clairement ici plutôt que de laisser Firestore rejeter l'écriture.
+    if (!Number.isInteger(priceValue) || priceValue < 1 || !Number.isInteger(stockValue) || stockValue < 0) {
+      Alert.alert("Valeur invalide", "Prix et stock doivent être des nombres entiers (ex : 1500), sans virgule.");
+      return;
+    }
+
     if (editingId) {
       updateProduct(editingId, {
         name: name.trim(),
@@ -167,12 +174,19 @@ export default function SellerProducts({ onBack }: Props) {
                 <Text style={styles.price}>{formatPrice(product.price)}</Text>
               </View>
               <View style={styles.actions}>
-                <TouchableOpacity onPress={() => startEdit(product.id)} style={styles.iconBtn}>
+                <TouchableOpacity
+                  onPress={() => startEdit(product.id)}
+                  style={styles.iconBtn}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Modifier ${product.name}`}
+                >
                   <Text style={{ fontSize: 14 }}>✏️</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   onPress={() => toggleProductActive(product.id)}
                   style={styles.iconBtn}
+                  accessibilityRole="button"
+                  accessibilityLabel={active ? `Masquer ${product.name}` : `Afficher ${product.name}`}
                 >
                   <Text style={{ fontSize: 14 }}>{active ? "🙈" : "👁️"}</Text>
                 </TouchableOpacity>
@@ -184,6 +198,8 @@ export default function SellerProducts({ onBack }: Props) {
                     ])
                   }
                   style={styles.iconBtn}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Supprimer ${product.name}`}
                 >
                   <Text style={{ fontSize: 14 }}>🗑️</Text>
                 </TouchableOpacity>

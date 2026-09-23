@@ -17,6 +17,7 @@ import {
 } from "../services/location";
 import { pushNotification } from "./notificationStore";
 import { deleteDoc, docRef, setDoc, subscribeDoc } from "../services/firebase/firestore";
+import { reportSubscriptionError, reportWriteError } from "../services/firebase/writeError";
 
 const DELIVERY_TRACKING_COLLECTION = "deliveryTracking";
 
@@ -47,6 +48,19 @@ export const getDriverPosition = driverPosition.getState;
 
 let activeSubscription: LocationSubscription | null = null;
 
+/** La position est publiée à chaque tick GPS : on ne remonte l'échec en toast
+ * qu'une fois par mission pour ne pas inonder le livreur. */
+let trackingErrorReported = false;
+
+function reportTrackingError(error: unknown) {
+  if (trackingErrorReported) {
+    console.error("[deliveryStore] publication de position refusée :", error);
+    return;
+  }
+  trackingErrorReported = true;
+  reportWriteError("deliveryStore.tracking", error);
+}
+
 export async function startDriverTracking(): Promise<DriverGeoStatus> {
   if (driverPosition.getState().status === "tracking") {
     return "tracking";
@@ -63,9 +77,7 @@ export async function startDriverTracking(): Promise<DriverGeoStatus> {
     const orderId = missionId.getState();
     if (orderId) {
       setDoc(docRef(DELIVERY_TRACKING_COLLECTION, orderId), { position, updatedAt }).catch(
-        (error) => {
-          if (__DEV__) console.warn("[deliveryStore] tracking publish failed:", error);
-        }
+        (error) => reportTrackingError(error)
       );
     }
   });
@@ -82,13 +94,16 @@ export async function startDriverTracking(): Promise<DriverGeoStatus> {
 export function stopDriverTracking() {
   activeSubscription?.remove();
   activeSubscription = null;
+  trackingErrorReported = false;
   driverPosition.setState({ status: "idle", position: null, updatedAt: null });
 }
 
 export function clearMission() {
   const orderId = missionId.getState();
   if (orderId) {
-    deleteDoc(docRef(DELIVERY_TRACKING_COLLECTION, orderId)).catch(() => {});
+    deleteDoc(docRef(DELIVERY_TRACKING_COLLECTION, orderId)).catch((error) =>
+      reportWriteError("deliveryStore.clearMission", error)
+    );
   }
   missionId.setState(null);
   missionPhase.setState("assigned");
@@ -130,7 +145,13 @@ function setTrackedOrder(orderId: string | null) {
           : { status: "idle", position: null, updatedAt: null }
       );
     },
-    () => remoteDriverPosition.setState({ status: "denied", position: null, updatedAt: null })
+    (error) => {
+      // Refus de lecture (rules) → "denied" ; coupure réseau → on garde la dernière position connue.
+      if (error.code === "permission-denied") {
+        remoteDriverPosition.setState({ status: "denied", position: null, updatedAt: null });
+      }
+      reportSubscriptionError("deliveryStore.tracking", error);
+    }
   );
 }
 

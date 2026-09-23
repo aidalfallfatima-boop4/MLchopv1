@@ -2,18 +2,16 @@ export const APP_NAME = "ML CHOP";
 
 export const DELIVERY_FEE = 2500;
 
+/** Nombre max de produits DIFFÉRENTS par commande (aligné sur firestore.rules : items.size() <= 5). */
+export const MAX_CART_ITEMS = 5;
+
+/** Quantité max par produit dans une commande (aligné sur firestore.rules : 1..99). */
+export const MAX_ITEM_QUANTITY = 99;
+
 export const DEMO_DELIVERY_CODE = "1234";
 
 /** Code OTP fixe pour la démo (inscription ET livraison) — aucune vraie API SMS branchée. */
 export const DEMO_OTP_CODE = "1234";
-
-/**
- * Mot de passe Firebase Auth partagé des 4 comptes de démo. Ces comptes sont
- * auto-créés (self-healing) au premier tap sur "Connexion rapide (démo)" —
- * voir loginDemo() dans store/authStore.ts — donc rien à faire côté Firebase
- * Console avant de tester.
- */
-export const DEMO_PASSWORD = "MLChopDemo2026!";
 
 export const SELLER_ID = "seller-1";
 
@@ -26,8 +24,8 @@ export const PAYMENT_METHODS = [
 ];
 
 /**
- * Comptes de démonstration — connexion immédiate depuis l'écran de connexion,
- * sans passer par inscription/OTP. Mots de passe non requis pour ces numéros.
+ * Anciens numéros des comptes de démonstration (la connexion rapide démo a été
+ * retirée) — conservé temporairement le temps que l'UI cesse de l'importer.
  */
 export const DEMO_PHONES = {
   seller: "+223 65 11 22 33",

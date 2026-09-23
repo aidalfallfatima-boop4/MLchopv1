@@ -1,6 +1,7 @@
 import { createStore } from "./createStore";
 import { getCurrentAccount, subscribeCurrentAccount } from "./authStore";
 import { docRef, setDoc, subscribeDoc } from "../services/firebase/firestore";
+import { reportSubscriptionError, reportWriteError } from "../services/firebase/writeError";
 
 const FAVORITES_COLLECTION = "favorites";
 
@@ -25,9 +26,15 @@ function resubscribe() {
 
   if (!uid) return;
 
-  unsubscribeQuery = subscribeDoc<FavoritesDoc>(FAVORITES_COLLECTION, uid, (doc) => {
-    store.setState(doc?.productIds ?? []);
-  });
+  unsubscribeQuery = subscribeDoc<FavoritesDoc>(
+    FAVORITES_COLLECTION,
+    uid,
+    (doc) => {
+      store.setState(doc?.productIds ?? []);
+    },
+    // Erreur d'écoute : on garde les derniers favoris connus.
+    (error) => reportSubscriptionError("favoriteStore", error)
+  );
 }
 
 /** À appeler une fois au démarrage : restaure/écoute les favoris du client connecté. */
@@ -39,6 +46,7 @@ export async function hydrateFavoriteStore() {
 }
 
 export function toggleFavorite(productId: number) {
+  const previous = store.getState();
   const next = store
     .getState()
     .includes(productId)
@@ -52,7 +60,9 @@ export function toggleFavorite(productId: number) {
 
   setDoc(docRef(FAVORITES_COLLECTION, uid), { productIds: next } satisfies FavoritesDoc).catch(
     (error) => {
-      if (__DEV__) console.warn("[favoriteStore] toggleFavorite failed:", error);
+      // Ne restaure que si personne n'a modifié les favoris entre-temps.
+      if (store.getState() === next) store.setState(previous);
+      reportWriteError("favoriteStore.toggleFavorite", error);
     }
   );
 }

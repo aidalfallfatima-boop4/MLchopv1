@@ -2,9 +2,16 @@ rules_version = '2';
 
 // Security Rules ML CHOP — voir CLAUDE.md/AGENTS.md pour le contexte projet.
 // Principe : jamais de "allow read, write: if true". Chaque collection est
-// scopée par rôle (users/{uid}.role) et, quand pertinent, par propriétaire.
+// scopée par rôle (users/{uid}.role), par statut d'approbation (vendeur/livreur
+// doivent être "active") et, quand pertinent, par propriétaire. Toute écriture
+// client est validée en forme (clés autorisées, types, tailles) : les testeurs
+// peuvent appeler le SDK Firebase directement avec la config publique.
+//
+// Tests : scripts/test-firestore-rules.cjs (à relancer après chaque déploiement).
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    // ================= helpers génériques =================
 
     function isSignedIn() {
       return request.auth != null;
@@ -28,8 +35,14 @@ service cloud.firestore {
       return myRole() == 'admin';
     }
 
-    function isDemoAccount() {
-      return request.auth.token.email in ['22365112233@mlchop.app', '22377001122@mlchop.app'];
+    // Compte validé : un vendeur/livreur "pending_approval" ou "rejected" n'a
+    // AUCUN privilège de son rôle tant que l'admin ne l'a pas activé.
+    function isActive() {
+      return myRole() != null && myAccount().status == 'active';
+    }
+
+    function isActiveRole(role) {
+      return myRole() == role && isActive();
     }
 
     function changedOnly(fields) {
@@ -40,7 +53,43 @@ service cloud.firestore {
       return isSignedIn() && myUid() == uid;
     }
 
-    // ---------------- users ----------------
+    function isStr(value, maxLen) {
+      return value is string && value.size() <= maxLen;
+    }
+
+    function isNonEmptyStr(value, maxLen) {
+      return value is string && value.size() >= 1 && value.size() <= maxLen;
+    }
+
+    // Champ optionnel : absent/null, ou chaîne de taille bornée.
+    function optStr(data, field, maxLen) {
+      return data.get(field, null) == null || isStr(data[field], maxLen);
+    }
+
+    function optBool(data, field) {
+      return data.get(field, null) == null || data[field] is bool;
+    }
+
+    function intBetween(value, lo, hi) {
+      return value is int && value >= lo && value <= hi;
+    }
+
+    function orderStatuses() {
+      return ['pending', 'confirmed', 'preparing', 'shipping', 'delivered', 'cancelled'];
+    }
+
+    // ================= users =================
+    function validUser(d) {
+      return d.keys().hasOnly(['role', 'fullName', 'phone', 'shopName', 'vehicle', 'status', 'createdAt', 'updatedAt'])
+        && d.keys().hasAll(['role', 'fullName', 'phone', 'status'])
+        && isNonEmptyStr(d.fullName, 80)
+        && isStr(d.phone, 30)
+        && optStr(d, 'shopName', 80)
+        && (d.get('vehicle', null) == null || d.vehicle in ['Moto', 'Voiture', 'Tricycle'])
+        && optStr(d, 'createdAt', 40)
+        && optStr(d, 'updatedAt', 40);
+    }
+
     // Un utilisateur lit/écrit son propre profil ; l'admin lit/écrit tout le
     // monde. Personne (y compris soi-même) ne peut changer son rôle ou son
     // statut d'approbation directement — seul l'admin le peut.
@@ -48,165 +97,374 @@ service cloud.firestore {
       allow get: if isOwner(uid) || isAdmin();
       allow list: if isAdmin();
 
-      // Un client est actif d'office ; un vendeur/livreur démarre en attente de
-      // validation admin — sauf les 2 comptes de démo (bouton "Connexion rapide"),
-      // reconnus par l'email Auth synthétisé depuis DEMO_PHONES (constants/config.ts).
+      // client → actif d'office ; vendeur/livreur → toujours en attente de
+      // validation admin (plus aucune exception "compte de démo").
       allow create: if isOwner(uid)
-        && request.resource.data.role in ['client', 'seller', 'delivery']
-        && (request.resource.data.status == 'pending_approval'
-            || (request.resource.data.status == 'active'
-                && (request.resource.data.role == 'client' || isDemoAccount())));
+        && validUser(request.resource.data)
+        && ((request.resource.data.role == 'client' && request.resource.data.status == 'active')
+            || (request.resource.data.role in ['seller', 'delivery']
+                && request.resource.data.status == 'pending_approval'));
 
       allow update: if isAdmin()
         || (isOwner(uid)
+            && validUser(request.resource.data)
             && request.resource.data.role == resource.data.role
             && request.resource.data.status == resource.data.status);
 
       allow delete: if isAdmin();
     }
 
-    // ---------------- products ----------------
-    // Catalogue lisible par tout compte connecté. Un vendeur ne gère que ses
-    // propres produits (et ne peut pas se réassigner le produit d'un autre).
+    // ================= products =================
+    // Forme écrite par store/productStore.ts (Product + createdAt/updatedAt).
+    function validProduct(d, productId) {
+      return d.keys().hasOnly(['id', 'name', 'price', 'category', 'emoji', 'description', 'stock',
+                               'sellerId', 'sellerName', 'active', 'popular', 'trending',
+                               'createdAt', 'updatedAt'])
+        && d.keys().hasAll(['id', 'name', 'price', 'category', 'emoji'])
+        && d.id is int && string(d.id) == productId
+        && isNonEmptyStr(d.name, 100)
+        && intBetween(d.price, 1, 100000000)
+        && isNonEmptyStr(d.category, 50)
+        && isStr(d.emoji, 16)
+        && optStr(d, 'description', 1000)
+        && (d.get('stock', null) == null || intBetween(d.stock, 0, 100000))
+        && optStr(d, 'sellerName', 80)
+        && optBool(d, 'active')
+        && optBool(d, 'popular')
+        && optBool(d, 'trending')
+        && optStr(d, 'createdAt', 40)
+        && optStr(d, 'updatedAt', 40);
+    }
+
+    // Catalogue lisible par tout compte connecté. Un vendeur ACTIF ne gère que
+    // ses propres produits (et ne peut pas se réassigner le produit d'un autre).
     match /products/{productId} {
       allow read: if isSignedIn();
 
       allow create: if isAdmin()
-        || (isSignedIn() && myRole() == 'seller' && request.resource.data.sellerId == myUid());
+        || (isActiveRole('seller')
+            && request.resource.data.sellerId == myUid()
+            && validProduct(request.resource.data, productId));
 
       allow update: if isAdmin()
-        || (isSignedIn() && myRole() == 'seller'
+        || (isActiveRole('seller')
             && resource.data.sellerId == myUid()
-            && request.resource.data.sellerId == resource.data.sellerId);
+            && request.resource.data.sellerId == myUid()
+            && validProduct(request.resource.data, productId));
 
       allow delete: if isAdmin()
-        || (isSignedIn() && myRole() == 'seller' && resource.data.sellerId == myUid());
+        || (isActiveRole('seller') && resource.data.sellerId == myUid());
     }
 
-    // ---------------- categories ----------------
+    // ================= categories =================
     match /categories/{categoryId} {
       allow read: if isSignedIn();
       allow write: if isAdmin();
     }
 
-    // ---------------- stockMovements ----------------
-    // Historique factuel : jamais modifié ni supprimé après coup.
+    // ================= stockMovements =================
+    // Historique factuel : jamais modifié ; seul l'admin peut en supprimer
+    // (nettoyage des données de test).
     match /stockMovements/{id} {
-      allow read: if isAdmin() || (isSignedIn() && myRole() == 'seller' && resource.data.userId == myUid());
-      allow create: if isSignedIn() && myRole() in ['seller', 'admin'] && request.resource.data.userId == myUid();
-      allow update, delete: if false;
+      allow read: if isAdmin() || (isActiveRole('seller') && resource.data.userId == myUid());
+      allow create: if (isActiveRole('seller') || isAdmin())
+        && request.resource.data.keys().hasOnly(['productId', 'previousQty', 'newQty', 'type', 'userId', 'userName', 'at'])
+        && request.resource.data.userId == myUid()
+        && request.resource.data.productId is int
+        && intBetween(request.resource.data.previousQty, 0, 100000)
+        && intBetween(request.resource.data.newQty, 0, 100000)
+        && request.resource.data.type in ['restock', 'adjustment']
+        && optStr(request.resource.data, 'userName', 80)
+        && optStr(request.resource.data, 'at', 40);
+      allow update: if false;
+      allow delete: if isAdmin();
     }
 
-    // ---------------- orders ----------------
-    // client  → uniquement ses commandes ; vendeur → commandes contenant un de
-    // ses produits ; livreur → toutes (pour voir les missions disponibles) mais
-    // ne peut écrire que sur les siennes ou une non assignée ; admin → tout.
+    // ================= orders =================
+    // Validation d'une commande à la création (store/orderStore.ts createOrder) :
+    // 1 à 5 articles, prix = prix réel du produit en base, quantités 1..99,
+    // total = somme + frais fixes 2500. Pas de boucle dans les rules : fonctions
+    // "déroulées" par index (|| court-circuite l'index hors limites).
+    // Budget get()/exists() : users/{moi} + 5 produits max = 6 docs (< 10).
+    function validItem(item) {
+      let product = get(/databases/$(database)/documents/products/$(string(item.id))).data;
+      return item is map
+        && item.keys().size() <= 20
+        && item.id is int
+        && intBetween(item.quantity, 1, 99)
+        && item.price is int
+        && item.price == product.price
+        && product.get('active', true) != false
+        && (product.get('sellerId', null) == null
+            || product.sellerId in request.resource.data.sellerIds);
+    }
+
+    function itemOk(items, i) {
+      return i >= items.size() || validItem(items[i]);
+    }
+
+    function lineTotal(items, i) {
+      return i < items.size() ? items[i].price * items[i].quantity : 0;
+    }
+
+    function itemsTotal(items) {
+      return lineTotal(items, 0) + lineTotal(items, 1) + lineTotal(items, 2)
+        + lineTotal(items, 3) + lineTotal(items, 4);
+    }
+
+    function validNewOrder(d, orderId) {
+      return d.keys().hasOnly(['id', 'items', 'total', 'status', 'customerName', 'customerPhone',
+                               'deliveryAddress', 'paymentMethod', 'paymentStatus', 'createdAt',
+                               'deliveryCode', 'deliveryFee', 'customerId', 'sellerIds', 'statusHistory'])
+        && d.customerId == myUid()
+        && d.get('id', orderId) == orderId
+        && d.status == 'pending'
+        && d.paymentStatus == 'pending'
+        && d.paymentMethod in ['orange_money', 'moov_money', 'wave', 'card', 'cash']
+        && isNonEmptyStr(d.customerName, 80)
+        && isNonEmptyStr(d.customerPhone, 30)
+        && isNonEmptyStr(d.deliveryAddress, 200)
+        && optStr(d, 'createdAt', 40)
+        && optStr(d, 'deliveryCode', 10)
+        && d.sellerIds is list && d.sellerIds.size() <= 5
+        && d.get('statusHistory', []) is list && d.get('statusHistory', []).size() <= 1
+        && d.items is list && d.items.size() >= 1 && d.items.size() <= 5
+        && itemOk(d.items, 0) && itemOk(d.items, 1) && itemOk(d.items, 2)
+        && itemOk(d.items, 3) && itemOk(d.items, 4)
+        && d.deliveryFee == 2500
+        && d.total == itemsTotal(d.items) + d.deliveryFee;
+    }
+
+    // Toute mise à jour (quel que soit le rôle) garde un statut connu et un
+    // historique borné.
+    function validOrderUpdate() {
+      return request.resource.data.status in orderStatuses()
+        && request.resource.data.get('statusHistory', []) is list
+        && request.resource.data.get('statusHistory', []).size() <= 20;
+    }
+
+    // client  → uniquement ses commandes ; vendeur actif → commandes contenant
+    // un de ses produits ; livreur actif → toutes (missions disponibles) mais
+    // n'écrit que sur les siennes ou une non assignée ; admin → tout.
     match /orders/{orderId} {
       allow read: if isAdmin()
         || (isSignedIn() && resource.data.customerId == myUid())
-        || (isSignedIn() && myRole() == 'seller' && myUid() in resource.data.sellerIds)
-        || (isSignedIn() && myRole() == 'delivery');
+        || (isActiveRole('seller') && myUid() in resource.data.sellerIds)
+        || isActiveRole('delivery');
 
-      // Une commande naît toujours "en attente" et non payée : impossible de
-      // créer directement une commande "livrée/payée" depuis la console du navigateur.
-      allow create: if isSignedIn()
-        && request.resource.data.customerId == myUid()
-        && request.resource.data.status == 'pending'
-        && request.resource.data.paymentStatus == 'pending';
+      // Une commande naît toujours "en attente" et non payée, avec des prix et
+      // un total recalculés côté règles.
+      allow create: if isSignedIn() && validNewOrder(request.resource.data, orderId);
 
       // Chaque rôle ne peut toucher QUE les champs de son étape du parcours
       // (voir store/orderStore.ts) : articles, prix et client restent figés.
       allow update: if isAdmin()
-        // client : résultat du paiement (attachPayment) ou annulation d'une
-        // commande impayée (cancelUnpaidOrder), tant qu'elle est en attente.
-        || (isSignedIn() && resource.data.customerId == myUid()
+        || (validOrderUpdate() && (
+          // client : résultat du paiement (attachPayment) ou annulation d'une
+          // commande impayée (cancelUnpaidOrder), tant qu'elle est en attente.
+          (isSignedIn() && resource.data.customerId == myUid()
             && resource.data.status == 'pending'
             && changedOnly(['paymentStatus', 'paymentReference', 'status', 'statusHistory'])
-            && request.resource.data.status in ['pending', 'cancelled'])
-        // vendeur : avancement du statut (SellerOrders).
-        || (isSignedIn() && myRole() == 'seller'
+            && request.resource.data.status in ['pending', 'cancelled']
+            && request.resource.data.get('paymentStatus', 'pending') in ['pending', 'paid', 'failed']
+            && optStr(request.resource.data, 'paymentReference', 60))
+          // vendeur actif : avancement du statut (SellerOrders).
+          || (isActiveRole('seller')
             && myUid() in resource.data.sellerIds
             && changedOnly(['status', 'statusHistory']))
-        // livreur : prise en charge d'une commande libre ou suivi de la sienne.
-        || (isSignedIn() && myRole() == 'delivery'
+          // livreur actif : prise en charge d'une commande libre (en cours) ou
+          // suivi de la sienne ; "livrée" seulement sur SA commande.
+          || (isActiveRole('delivery')
+            && resource.data.status in ['pending', 'confirmed', 'preparing', 'shipping']
             && (resource.data.get('deliveryId', null) == null || resource.data.get('deliveryId', null) == myUid())
             && request.resource.data.get('deliveryId', null) in [null, myUid()]
-            && changedOnly(['status', 'statusHistory', 'deliveryId']));
+            && changedOnly(['status', 'statusHistory', 'deliveryId'])
+            && (request.resource.data.status == resource.data.status
+                || request.resource.data.status == 'shipping'
+                || (request.resource.data.status == 'delivered'
+                    && resource.data.get('deliveryId', null) == myUid())))
+        ));
 
       allow delete: if isAdmin();
     }
 
-    // ---------------- deliveryTracking ----------------
+    // ================= deliveryTracking =================
     // Position GPS temps réel du livreur pour une commande. Écrite par le
-    // livreur assigné ; lue par ce livreur, le client concerné et l'admin.
+    // livreur actif assigné ; lue par ce livreur, le client concerné et l'admin.
     match /deliveryTracking/{orderId} {
       function order() {
         return get(/databases/$(database)/documents/orders/$(orderId)).data;
+      }
+
+      function isAssignedCourier() {
+        return isActiveRole('delivery') && order().get('deliveryId', null) == myUid();
       }
 
       allow read: if isAdmin()
         || (isSignedIn() && order().customerId == myUid())
         || (isSignedIn() && order().get('deliveryId', null) == myUid());
 
-      allow write: if isSignedIn() && myRole() == 'delivery' && order().get('deliveryId', null) == myUid();
+      allow create, update: if isAssignedCourier()
+        && request.resource.data.keys().hasOnly(['position', 'updatedAt'])
+        && request.resource.data.position is map
+        && request.resource.data.position.keys().hasOnly(['lat', 'lng', 'heading'])
+        && request.resource.data.get('updatedAt', 0) is number;
+
+      allow delete: if isAdmin() || isAssignedCourier();
     }
 
-    // ---------------- payments ----------------
+    // ================= payments =================
     // Le paiement simulé est aujourd'hui stocké dans orders.paymentStatus/
-    // paymentReference (pas de collection séparée écrite par le client). Règle
-    // prête si "payments" est utilisée plus tard (ex : par une Cloud Function).
+    // paymentReference. Règle prête si "payments" est utilisée plus tard.
     match /payments/{id} {
       allow read: if isAdmin() || (isSignedIn() && resource.data.customerId == myUid());
       allow write: if isAdmin();
     }
 
-    // ---------------- cart / favorites ----------------
-    // Un doc par utilisateur (id du doc = uid) : strictement privé.
+    // ================= cart / favorites =================
+    // Un doc par utilisateur (id du doc = uid) : privé (+ lecture admin pour
+    // les sauvegardes).
     match /cart/{uid} {
-      allow read, write: if isOwner(uid);
+      allow read: if isOwner(uid) || isAdmin();
+      allow create, update: if isOwner(uid)
+        && request.resource.data.keys().hasOnly(['items'])
+        && request.resource.data.items is list
+        && request.resource.data.items.size() <= 50;
+      allow delete: if isOwner(uid) || isAdmin();
     }
 
     match /favorites/{uid} {
-      allow read, write: if isOwner(uid);
+      allow read: if isOwner(uid) || isAdmin();
+      allow create, update: if isOwner(uid)
+        && request.resource.data.keys().hasOnly(['productIds'])
+        && request.resource.data.productIds is list
+        && request.resource.data.productIds.size() <= 200;
+      allow delete: if isOwner(uid) || isAdmin();
     }
 
-    // ---------------- notifications ----------------
+    // ================= notifications =================
+    // Forme écrite par store/notificationStore.ts (pushNotification).
     match /notifications/{id} {
-      allow read: if isSignedIn() && resource.data.userId == myUid();
-      allow create: if isSignedIn();
-      allow update, delete: if isSignedIn() && resource.data.userId == myUid();
+      allow read: if isAdmin() || (isSignedIn() && resource.data.userId == myUid());
+
+      allow create: if isSignedIn()
+        && request.resource.data.keys().hasOnly(['id', 'title', 'message', 'type', 'createdAt', 'read', 'userId'])
+        && request.resource.data.keys().hasAll(['title', 'message', 'type', 'read', 'userId'])
+        && request.resource.data.get('id', id) == id
+        && isNonEmptyStr(request.resource.data.userId, 128)
+        && isNonEmptyStr(request.resource.data.title, 100)
+        && isStr(request.resource.data.message, 500)
+        && request.resource.data.type in ['info', 'success', 'warning', 'error']
+        && request.resource.data.read == false
+        && optStr(request.resource.data, 'createdAt', 40);
+
+      allow update: if isSignedIn() && resource.data.userId == myUid()
+        && changedOnly(['read'])
+        && request.resource.data.read is bool;
+
+      allow delete: if isAdmin() || (isSignedIn() && resource.data.userId == myUid());
     }
 
-    // ---------------- reviews ----------------
+    // ================= reviews =================
+    // Forme écrite par store/reviewStore.ts (addReview).
+    function validReview(d, reviewId) {
+      return d.keys().hasOnly(['id', 'productId', 'orderId', 'author', 'rating', 'comment', 'createdAt', 'authorId'])
+        && d.keys().hasAll(['productId', 'author', 'rating', 'comment', 'authorId'])
+        && d.get('id', reviewId) == reviewId
+        && d.productId is int
+        && optStr(d, 'orderId', 40)
+        && isNonEmptyStr(d.author, 80)
+        && intBetween(d.rating, 1, 5)
+        && isStr(d.comment, 1000)
+        && optStr(d, 'createdAt', 40);
+    }
+
     // Avis publics (catalogue), mais seul l'auteur (ou l'admin) peut modifier/supprimer.
     match /reviews/{id} {
       allow read: if isSignedIn();
-      allow create: if isSignedIn() && request.resource.data.authorId == myUid();
-      allow update, delete: if isAdmin() || (isSignedIn() && resource.data.authorId == myUid());
+      allow create: if isSignedIn()
+        && request.resource.data.authorId == myUid()
+        && validReview(request.resource.data, id);
+      allow update: if isAdmin()
+        || (isSignedIn() && resource.data.authorId == myUid()
+            && request.resource.data.authorId == myUid()
+            && validReview(request.resource.data, id));
+      allow delete: if isAdmin() || (isSignedIn() && resource.data.authorId == myUid());
     }
 
-    // ---------------- shops ----------------
+    // ================= shops =================
     // Doc id = uid du vendeur (comme users/cart/favorites).
     match /shops/{sellerId} {
       allow read: if isSignedIn();
-      allow write: if isAdmin() || (isSignedIn() && myUid() == sellerId && myRole() == 'seller');
+      allow create, update: if isAdmin()
+        || (isOwner(sellerId) && isActiveRole('seller')
+            && request.resource.data.keys().size() <= 20
+            && optStr(request.resource.data, 'name', 80)
+            && optStr(request.resource.data, 'description', 1000));
+      allow delete: if isAdmin() || (isOwner(sellerId) && isActiveRole('seller'));
     }
 
-    // ---------------- messages / conversations ----------------
+    // ================= messages / conversations =================
     match /conversations/{conversationId} {
-      allow read, update: if isSignedIn() && myUid() in resource.data.participantIds;
-      allow create: if isSignedIn() && myUid() in request.resource.data.participantIds;
+      function validConversation(d) {
+        return d.keys().size() <= 20
+          && d.participantIds is list
+          && d.participantIds.size() >= 1 && d.participantIds.size() <= 10
+          && optStr(d, 'lastMessage', 500)
+          && optStr(d, 'title', 100);
+      }
+
+      allow read: if isAdmin() || (isSignedIn() && myUid() in resource.data.participantIds);
+      allow create: if isSignedIn()
+        && myUid() in request.resource.data.participantIds
+        && validConversation(request.resource.data);
+      allow update: if isSignedIn()
+        && myUid() in resource.data.participantIds
+        && request.resource.data.participantIds == resource.data.participantIds
+        && validConversation(request.resource.data);
       allow delete: if isAdmin();
     }
 
     match /messages/{messageId} {
       allow read: if isAdmin()
         || (isSignedIn() && (resource.data.senderId == myUid() || resource.data.recipientId == myUid()));
-      allow create: if isSignedIn() && request.resource.data.senderId == myUid();
+      allow create: if isSignedIn()
+        && request.resource.data.senderId == myUid()
+        && request.resource.data.keys().size() <= 15
+        && optStr(request.resource.data, 'text', 2000)
+        && optStr(request.resource.data, 'message', 2000)
+        && optStr(request.resource.data, 'recipientId', 128)
+        && optStr(request.resource.data, 'conversationId', 128);
       allow update, delete: if isAdmin();
     }
 
-    // ---------------- adminLogs ----------------
+    // ================= feedback =================
+    // "Signaler un bug" (store/feedbackStore.ts) : tout compte connecté écrit,
+    // seul l'admin lit / change le statut / supprime.
+    match /feedback/{feedbackId} {
+      allow create: if isSignedIn()
+        && request.resource.data.keys().hasOnly(['userId', 'role', 'type', 'message', 'screen', 'userAgent', 'createdAt', 'status'])
+        && request.resource.data.keys().hasAll(['userId', 'type', 'message', 'status'])
+        && request.resource.data.userId == myUid()
+        && request.resource.data.type in ['bug', 'suggestion', 'security']
+        && request.resource.data.message is string
+        && request.resource.data.message.size() >= 5
+        && request.resource.data.message.size() <= 2000
+        && request.resource.data.status == 'new'
+        && (request.resource.data.get('role', null) == null
+            || request.resource.data.role in ['client', 'seller', 'delivery', 'admin'])
+        && optStr(request.resource.data, 'screen', 100)
+        && optStr(request.resource.data, 'userAgent', 300)
+        && optStr(request.resource.data, 'createdAt', 40);
+
+      allow read: if isAdmin();
+      allow update: if isAdmin()
+        && changedOnly(['status'])
+        && request.resource.data.status in ['new', 'seen', 'fixed'];
+      allow delete: if isAdmin();
+    }
+
+    // ================= adminLogs =================
     match /adminLogs/{id} {
       allow read, write: if isAdmin();
     }

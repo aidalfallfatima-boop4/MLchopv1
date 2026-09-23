@@ -28,8 +28,16 @@ export default function OtpScreen({ role, onBack }: Props) {
 
   async function verify() {
     setVerifying(true);
-    const result = await verifyRegistrationOtp(code.trim());
-    setVerifying(false);
+    let result: Awaited<ReturnType<typeof verifyRegistrationOtp>>;
+    try {
+      result = await verifyRegistrationOtp(code.trim());
+    } catch (error) {
+      console.error("[OtpScreen] Vérification impossible :", error);
+      Alert.alert("Inscription impossible", "Une erreur est survenue. Réessayez.");
+      return;
+    } finally {
+      setVerifying(false);
+    }
 
     if (!result.success) {
       Alert.alert(

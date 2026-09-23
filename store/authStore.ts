@@ -1,6 +1,6 @@
 import { createStore } from "./createStore";
 import { Account, ApprovalStatus, Role, Vehicle } from "../types";
-import { DEMO_OTP_CODE, DEMO_PASSWORD, DEMO_PHONES } from "../constants/config";
+import { DEMO_OTP_CODE } from "../constants/config";
 import { setRole, updateUserProfile, logout as logoutUserStore } from "./userStore";
 import {
   UserDoc,
@@ -11,6 +11,7 @@ import {
   subscribeAuthUser,
 } from "../services/firebase/auth";
 import { col, docRef, subscribeCollection, subscribeDoc, updateDoc } from "../services/firebase/firestore";
+import { reportSubscriptionError, reportWriteError } from "../services/firebase/writeError";
 
 const USERS_COLLECTION = "users";
 
@@ -64,7 +65,8 @@ function ensureAccountsListListener() {
   unsubscribeAccountsList = subscribeCollection<UserDoc>(
     col(USERS_COLLECTION),
     (items) => accountsStore.setState(items.map((item) => docToAccount(item.id, item))),
-    () => accountsStore.setState([])
+    // Erreur d'écoute : on garde la dernière liste connue plutôt qu'une liste vide.
+    (error) => reportSubscriptionError("authStore.accounts", error)
   );
 }
 
@@ -101,7 +103,9 @@ export async function hydrateAuthStore() {
           stopAccountsListListener();
         }
       },
-      () => currentAccountStore.setState(null)
+      // Erreur d'écoute (réseau, rules…) : on NE ferme PAS la session — le
+      // dernier profil connu reste affiché, l'utilisateur est seulement prévenu.
+      (error) => reportSubscriptionError("authStore.account", error)
     );
   });
 }
@@ -123,6 +127,8 @@ function mapAuthError(error: unknown): string {
       return "Mot de passe trop court (6 caractères minimum).";
     case "auth/network-request-failed":
       return "Pas de connexion internet — réessayez.";
+    case "profile-missing":
+      return "Profil introuvable pour ce compte. Contactez le support ML CHOP pour le rétablir.";
     default:
       return "Une erreur est survenue. Réessayez dans un instant.";
   }
@@ -164,7 +170,11 @@ export async function verifyRegistrationOtp(code: string): Promise<OtpResult> {
 
 export type LoginResult =
   | { success: true; account: Account }
-  | { success: false; reason: "not_found" | "wrong_password" | "error"; message?: string };
+  | {
+      success: false;
+      reason: "not_found" | "wrong_password" | "profile_missing" | "error";
+      message?: string;
+    };
 
 export async function login(phone: string, password: string): Promise<LoginResult> {
   try {
@@ -172,6 +182,9 @@ export async function login(phone: string, password: string): Promise<LoginResul
     return { success: true, account };
   } catch (error) {
     const code = (error as { code?: string } | null)?.code ?? "";
+    if (code === "profile-missing") {
+      return { success: false, reason: "profile_missing", message: mapAuthError(error) };
+    }
     if (code === "auth/wrong-password") {
       return { success: false, reason: "wrong_password" };
     }
@@ -186,75 +199,13 @@ export async function login(phone: string, password: string): Promise<LoginResul
   }
 }
 
-const DEMO_FULL_NAMES: Record<Exclude<Role, null>, string> = {
-  client: "Client ML CHOP",
-  seller: "Vendeur Démo",
-  delivery: "Livreur Démo",
-  admin: "Admin ML CHOP",
-};
-
-/**
- * Connexion rapide "démo" (bouton dédié dans LoginScreen) : tente une vraie
- * connexion Firebase, et si le compte n'existe pas encore sur CE projet
- * Firebase, le crée à la volée (self-healing) — évite d'avoir à seed la
- * base manuellement avant de tester l'app.
- */
-export async function loginDemo(role: Exclude<Role, null>): Promise<LoginResult> {
-  const phone = DEMO_PHONES[role];
-
-  try {
-    const account = await signInAccount(phone, DEMO_PASSWORD);
-    return { success: true, account };
-  } catch (error) {
-    const code = (error as { code?: string } | null)?.code ?? "";
-    const shouldCreate =
-      code === "auth/user-not-found" ||
-      code === "auth/invalid-credential" ||
-      code === "auth/invalid-email";
-
-    if (!shouldCreate) {
-      return { success: false, reason: "error", message: mapAuthError(error) };
-    }
-
-    // Un compte admin ne s'auto-crée jamais (les Security Rules le refusent, et
-    // un admin au mot de passe public serait une faille) : il se crée à la main
-    // dans Firebase Console (users/{uid}.role = "admin").
-    if (role === "admin") {
-      return {
-        success: false,
-        reason: "error",
-        message: "Pas de connexion rapide pour l'admin : connectez-vous avec son mot de passe.",
-      };
-    }
-
-    try {
-      const account = await registerAccount({
-        role,
-        fullName: DEMO_FULL_NAMES[role],
-        phone,
-        password: DEMO_PASSWORD,
-        shopName: role === "seller" ? "Boutique ML CHOP" : undefined,
-        vehicle: role === "delivery" ? "Moto" : undefined,
-        forceActive: true,
-      });
-      return { success: true, account };
-    } catch (registerError) {
-      return { success: false, reason: "error", message: mapAuthError(registerError) };
-    }
-  }
-}
-
 export function logoutAccount() {
-  signOutAccount().catch(() => {});
+  signOutAccount().catch((error) => reportWriteError("authStore.logoutAccount", error));
 }
 
 export function setAccountStatus(id: string, status: ApprovalStatus) {
   updateDoc(docRef(USERS_COLLECTION, id), {
     status,
     updatedAt: new Date().toISOString(),
-  }).catch((error) => {
-    if (__DEV__) {
-      console.warn("[authStore] setAccountStatus failed:", error);
-    }
-  });
+  }).catch((error) => reportWriteError("authStore.setAccountStatus", error));
 }

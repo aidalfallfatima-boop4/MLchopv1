@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import {
   Alert,
   SafeAreaView,
@@ -21,6 +21,10 @@ import { DELIVERY_FEE } from "../../constants/config";
 import { Order } from "../../types";
 import Header from "../../components/Header";
 
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback;
+}
+
 type Props = {
   onBack: () => void;
   onSuccess: () => void;
@@ -34,10 +38,14 @@ export default function CheckoutScreen({ onBack, onSuccess }: Props) {
   const [address, setAddress] = useState(user.address);
   const [method, setMethod] = useState<Order["paymentMethod"]>("cash");
   const [paying, setPaying] = useState(false);
+  const submittingRef = useRef(false);
 
   const subtotal = getCartTotal(items);
 
   async function submit() {
+    // Garde anti double-clic : une seule commande à la fois.
+    if (submittingRef.current) return;
+
     if (!name.trim() || !phone.trim() || !address.trim()) {
       Alert.alert("Informations manquantes", "Remplissez nom, téléphone et adresse.");
       return;
@@ -48,40 +56,63 @@ export default function CheckoutScreen({ onBack, onSuccess }: Props) {
       return;
     }
 
-    // 1. La commande est créée D'ABORD, avec son vrai numéro.
-    const order = placeOrder({
-      items,
-      subtotal,
-      customerName: name.trim(),
-      customerPhone: phone.trim(),
-      deliveryAddress: address.trim(),
-      paymentMethod: method,
-    });
-
-    // 2. Le paiement (simulation locale) est ensuite rattaché à cette commande réelle.
+    submittingRef.current = true;
     setPaying(true);
-    const payment = await processPayment(order.id, method, subtotal + DELIVERY_FEE);
-    setPaying(false);
 
-    attachPayment(order.id, { status: payment.status, reference: payment.reference });
+    try {
+      // 1. La commande est créée D'ABORD (Firestore), avec son vrai numéro.
+      let order: Order;
+      try {
+        order = await placeOrder({
+          items,
+          subtotal,
+          customerName: name.trim(),
+          customerPhone: phone.trim(),
+          deliveryAddress: address.trim(),
+          paymentMethod: method,
+        });
+      } catch (error) {
+        Alert.alert("Commande impossible", errorMessage(error, "La commande n'a pas pu être enregistrée. Réessayez."));
+        return;
+      }
 
-    if (payment.status !== "paid") {
-      cancelUnpaidOrder(order.id);
+      // 2. Le paiement (simulation locale) est ensuite rattaché à cette commande réelle.
+      try {
+        const payment = await processPayment(order.id, method, subtotal + DELIVERY_FEE);
+        await attachPayment(order.id, { status: payment.status, reference: payment.reference });
+
+        if (payment.status !== "paid") {
+          await cancelUnpaidOrder(order.id);
+          Alert.alert(
+            "Paiement refusé",
+            `Le paiement simulé de la commande ${order.id} a échoué. Choisissez un autre moyen de paiement et réessayez.`
+          );
+          return;
+        }
+      } catch (error) {
+        // On tente d'annuler la commande orpheline ; son échec ne doit pas masquer l'erreur initiale.
+        await cancelUnpaidOrder(order.id).catch((cancelError) =>
+          console.error("[Checkout] Annulation impossible :", cancelError)
+        );
+        Alert.alert("Paiement impossible", errorMessage(error, "Le paiement n'a pas pu être enregistré. Réessayez."));
+        return;
+      }
+
+      updateUserProfile({ name, phone, address });
+      clearCart();
+
+      // Confirmation purement informative : la navigation ne dépend PAS du bouton.
       Alert.alert(
-        "Paiement refusé",
-        `Le paiement simulé de la commande ${order.id} a échoué. Choisissez un autre moyen de paiement et réessayez.`
+        "Commande confirmée",
+        `Commande ${order.id}
+Code de livraison : ${order.deliveryCode}
+(Paiement simulé — aucune vraie transaction bancaire.)`
       );
-      return;
+      onSuccess();
+    } finally {
+      submittingRef.current = false;
+      setPaying(false);
     }
-
-    updateUserProfile({ name, phone, address });
-    clearCart();
-
-    Alert.alert(
-      "Commande confirmée",
-      `Commande ${order.id}\nCode de livraison : ${order.deliveryCode}\n(Paiement simulé — aucune vraie transaction bancaire.)`,
-      [{ text: "OK", onPress: onSuccess }]
-    );
   }
 
   return (
@@ -133,9 +164,12 @@ export default function CheckoutScreen({ onBack, onSuccess }: Props) {
           style={[styles.cta, paying && styles.ctaDisabled]}
           onPress={submit}
           disabled={paying}
+          accessibilityRole="button"
+          accessibilityLabel="Confirmer la commande"
+          accessibilityState={{ disabled: paying }}
         >
           <Text style={styles.ctaText}>
-            {paying ? "Paiement en cours..." : `CONFIRMER • ${formatPrice(subtotal + DELIVERY_FEE)}`}
+            {paying ? "TRAITEMENT..." : `CONFIRMER • ${formatPrice(subtotal + DELIVERY_FEE)}`}
           </Text>
         </TouchableOpacity>
       </ScrollView>

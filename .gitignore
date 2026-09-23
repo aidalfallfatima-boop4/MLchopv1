@@ -26,3 +26,6 @@ presentation-cmdt-smart/
 proposition-cmdt-plateforme-terrain/
 LA-POSTE-MALI.md
 terminal
+
+# Sauvegardes Firestore (scripts/backup-firestore.cjs) : données personnelles, jamais commit.
+backups/

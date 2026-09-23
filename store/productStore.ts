@@ -7,6 +7,7 @@ import { loadJSON, saveJSON } from "../services/persistence";
 import { getCurrentAccount, subscribeCurrentAccount } from "./authStore";
 import { db } from "../services/firebase/app";
 import { col, docRef, deleteDoc, setDoc, subscribeCollection, updateDoc } from "../services/firebase/firestore";
+import { reportSubscriptionError, reportWriteError } from "../services/firebase/writeError";
 
 const PRODUCTS_COLLECTION = "products";
 const STOCK_MOVEMENTS_COLLECTION = "stockMovements";
@@ -52,9 +53,8 @@ async function seedIfEmpty() {
     await batch.commit();
     saveJSON(SEED_FLAG_KEY, true);
   } catch (error) {
-    if (__DEV__) {
-      console.warn("[productStore] seed failed (Security Rules ?) :", error);
-    }
+    // Le drapeau n'est pas posé : le seed sera retenté au prochain démarrage.
+    reportWriteError("productStore.seed", error);
   }
 }
 
@@ -87,9 +87,10 @@ function resubscribe() {
         }
       }
     },
-    () => {
-      // Lecture refusée : on garde le catalogue de démo local en mémoire,
+    (error) => {
+      // Lecture refusée : on garde le dernier catalogue connu en mémoire,
       // ré-écouté automatiquement au prochain changement de session.
+      reportSubscriptionError("productStore", error);
     }
   );
 }
@@ -100,6 +101,15 @@ export async function hydrateProductStore() {
   hydrated = true;
   resubscribe();
   subscribeCurrentAccount(resubscribe);
+}
+
+/** Rollback ciblé : remet la version précédente d'UN produit (ré-insérée si supprimée). */
+function restoreProduct(previous: Product) {
+  store.setState((products) =>
+    products.some((product) => product.id === previous.id)
+      ? products.map((product) => (product.id === previous.id ? previous : product))
+      : [...products, previous]
+  );
 }
 
 export function addProduct(product: Omit<Product, "id">) {
@@ -117,7 +127,8 @@ export function addProduct(product: Omit<Product, "id">) {
     createdAt: now,
     updatedAt: now,
   }).catch((error) => {
-    if (__DEV__) console.warn("[productStore] addProduct failed:", error);
+    store.setState((products) => products.filter((product) => product.id !== id));
+    reportWriteError("productStore.addProduct", error);
   });
 }
 
@@ -131,13 +142,17 @@ export function updateProduct(id: number, patch: Partial<Omit<Product, "id">>) {
   updateDoc(docRef(PRODUCTS_COLLECTION, String(id)), {
     ...patch,
     updatedAt: new Date().toISOString(),
-  }).catch((error) => {
-    if (__DEV__) console.warn("[productStore] updateProduct failed:", error);
-  });
-
-  if (previous && typeof patch.stock === "number" && patch.stock !== previous.stock) {
-    logStockMovement(id, previous.stock ?? 0, patch.stock);
-  }
+  })
+    .then(() => {
+      // Mouvement de stock journalisé seulement si la mise à jour a été acceptée.
+      if (previous && typeof patch.stock === "number" && patch.stock !== previous.stock) {
+        logStockMovement(id, previous.stock ?? 0, patch.stock);
+      }
+    })
+    .catch((error) => {
+      if (previous) restoreProduct(previous);
+      reportWriteError("productStore.updateProduct", error);
+    });
 }
 
 function logStockMovement(productId: number, previousQty: number, newQty: number) {
@@ -152,16 +167,16 @@ function logStockMovement(productId: number, previousQty: number, newQty: number
     userId: account?.id ?? null,
     userName: account?.fullName ?? null,
     at: new Date().toISOString(),
-  }).catch((error) => {
-    if (__DEV__) console.warn("[productStore] logStockMovement failed:", error);
-  });
+  }).catch((error) => reportWriteError("productStore.logStockMovement", error));
 }
 
 export function removeProduct(id: number) {
+  const previous = store.getState().find((product) => product.id === id);
   store.setState((products) => products.filter((product) => product.id !== id));
 
   deleteDoc(docRef(PRODUCTS_COLLECTION, String(id))).catch((error) => {
-    if (__DEV__) console.warn("[productStore] removeProduct failed:", error);
+    if (previous) restoreProduct(previous);
+    reportWriteError("productStore.removeProduct", error);
   });
 }
 
@@ -179,7 +194,8 @@ export function toggleProductActive(id: number) {
     active: nextActive,
     updatedAt: new Date().toISOString(),
   }).catch((error) => {
-    if (__DEV__) console.warn("[productStore] toggleProductActive failed:", error);
+    if (current) restoreProduct(current);
+    reportWriteError("productStore.toggleProductActive", error);
   });
 }
 

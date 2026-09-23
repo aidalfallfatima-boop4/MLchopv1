@@ -1,0 +1,11 @@
+name: 💡 Suggestion
+description: Une idée pour améliorer ML CHOP
+labels: [suggestion, testeurs]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: Votre idée
+      description: Quel problème elle résout, pour quel type d'utilisateur (client, vendeur, livreur).
+    validations:
+      required: true

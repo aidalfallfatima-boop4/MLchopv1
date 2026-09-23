@@ -14,6 +14,7 @@ import {
   updateDoc,
   where,
 } from "../services/firebase/firestore";
+import { reportSubscriptionError, reportWriteError } from "../services/firebase/writeError";
 
 const ORDERS_COLLECTION = "orders";
 
@@ -107,8 +108,30 @@ function resubscribe() {
   unsubscribeQuery = subscribeCollection<Order>(
     target,
     (items) => store.setState(sortByCreatedAtDesc(items)),
-    () => store.setState([])
+    // Erreur d'écoute : on garde les dernières commandes connues (jamais "aucune commande").
+    (error) => reportSubscriptionError("orderStore", error)
   );
+}
+
+/** Remplace UNE commande dans le store (utilisé pour les rollbacks ciblés, sans
+ * écraser les autres commandes arrivées entre-temps par snapshot). */
+function replaceOrder(orderId: string, replacement: Order | undefined) {
+  store.setState((orders) => {
+    if (!replacement) return orders.filter((order) => order.id !== orderId);
+    return orders.some((order) => order.id === orderId)
+      ? orders.map((order) => (order.id === orderId ? replacement : order))
+      : sortByCreatedAtDesc([replacement, ...orders]);
+  });
+}
+
+function findOrder(orderId: string): Order | undefined {
+  return store.getState().find((order) => order.id === orderId);
+}
+
+function patchOrder(orderId: string, patch: Partial<Order>): Order | undefined {
+  const previous = findOrder(orderId);
+  if (previous) replaceOrder(orderId, { ...previous, ...patch });
+  return previous;
 }
 
 /** À appeler une fois au démarrage : écoute les commandes Firestore en temps réel. */
@@ -123,8 +146,10 @@ export async function hydrateOrderStore() {
  * Crée la commande AVANT toute tentative de paiement : le paiement (mock ou
  * futur vrai) est ensuite toujours rattaché à un vrai id de commande via
  * `attachPayment`, jamais à un identifiant provisoire type "pending-order".
+ * Insertion optimiste, puis attente de l'écriture Firestore : en cas de refus,
+ * la commande locale est retirée et l'erreur est propagée à l'appelant.
  */
-export function createOrder(input: {
+export async function createOrder(input: {
   items: CartItem[];
   total: number;
   customerName: string;
@@ -132,7 +157,7 @@ export function createOrder(input: {
   deliveryAddress: string;
   paymentMethod: Order["paymentMethod"];
   deliveryFee: number;
-}) {
+}): Promise<Order> {
   const account = getCurrentAccount();
   const now = new Date().toISOString();
   const sellerIds = Array.from(
@@ -159,32 +184,41 @@ export function createOrder(input: {
 
   store.setState((orders) => [order, ...orders]);
 
-  setDoc(docRef(ORDERS_COLLECTION, order.id), order).catch((error) => {
-    if (__DEV__) console.warn("[orderStore] createOrder failed:", error);
-  });
+  try {
+    await setDoc(docRef(ORDERS_COLLECTION, order.id), order);
+  } catch (error) {
+    replaceOrder(order.id, undefined);
+    console.error("[orderStore] createOrder refusé :", error);
+    throw error;
+  }
 
   return order;
 }
 
-/** Associe le résultat du paiement (simulé) à la vraie commande déjà créée. */
-export function attachPayment(
+/**
+ * Associe le résultat du paiement (simulé) à la vraie commande déjà créée.
+ * Rejette (après rollback local) si Firestore refuse l'écriture ; la
+ * notification de succès/échec du paiement n'est émise qu'APRÈS l'écriture.
+ */
+export async function attachPayment(
   orderId: string,
   payment: { status: PaymentStatus; reference: string }
-) {
-  store.setState((orders) =>
-    orders.map((order) =>
-      order.id === orderId
-        ? { ...order, paymentStatus: payment.status, paymentReference: payment.reference }
-        : order
-    )
-  );
-
-  updateDoc(docRef(ORDERS_COLLECTION, orderId), {
+): Promise<void> {
+  const previous = patchOrder(orderId, {
     paymentStatus: payment.status,
     paymentReference: payment.reference,
-  }).catch((error) => {
-    if (__DEV__) console.warn("[orderStore] attachPayment failed:", error);
   });
+
+  try {
+    await updateDoc(docRef(ORDERS_COLLECTION, orderId), {
+      paymentStatus: payment.status,
+      paymentReference: payment.reference,
+    });
+  } catch (error) {
+    if (previous) replaceOrder(orderId, previous);
+    console.error("[orderStore] attachPayment refusé :", error);
+    throw error;
+  }
 
   if (payment.status === "paid") {
     pushNotification({
@@ -201,22 +235,22 @@ export function attachPayment(
   }
 }
 
-/** Paiement refusé : la commande créée n'est pas honorée, on l'annule proprement. */
-export function cancelUnpaidOrder(orderId: string) {
+/** Paiement refusé : la commande créée n'est pas honorée, on l'annule proprement.
+ * Rejette (après rollback local) si Firestore refuse l'annulation. */
+export async function cancelUnpaidOrder(orderId: string): Promise<void> {
   const now = new Date().toISOString();
+  const previous = patchOrder(orderId, { status: "cancelled" as OrderStatus });
 
-  store.setState((orders) =>
-    orders.map((order) =>
-      order.id === orderId ? { ...order, status: "cancelled" as OrderStatus } : order
-    )
-  );
-
-  updateDoc(docRef(ORDERS_COLLECTION, orderId), {
-    status: "cancelled",
-    statusHistory: arrayUnion({ status: "cancelled", at: now }),
-  }).catch((error) => {
-    if (__DEV__) console.warn("[orderStore] cancelUnpaidOrder failed:", error);
-  });
+  try {
+    await updateDoc(docRef(ORDERS_COLLECTION, orderId), {
+      status: "cancelled",
+      statusHistory: arrayUnion({ status: "cancelled", at: now }),
+    });
+  } catch (error) {
+    if (previous) replaceOrder(orderId, previous);
+    console.error("[orderStore] cancelUnpaidOrder refusé :", error);
+    throw error;
+  }
 }
 
 const STATUS_NOTIFICATION_MESSAGE: Record<OrderStatus, (order: Order) => string> = {
@@ -229,47 +263,40 @@ const STATUS_NOTIFICATION_MESSAGE: Record<OrderStatus, (order: Order) => string>
 };
 
 export function updateOrderStatus(id: string, status: OrderStatus) {
-  let updated: Order | undefined;
   const now = new Date().toISOString();
-
-  store.setState((orders) =>
-    orders.map((order) => {
-      if (order.id !== id) {
-        return order;
-      }
-      updated = { ...order, status };
-      return updated;
-    })
-  );
-
-  if (!updated) return;
+  const previous = patchOrder(id, { status });
+  if (!previous) return;
+  const updated: Order = { ...previous, status };
 
   updateDoc(docRef(ORDERS_COLLECTION, id), {
     status,
     statusHistory: arrayUnion({ status, at: now }),
-  }).catch((error) => {
-    if (__DEV__) console.warn("[orderStore] updateOrderStatus failed:", error);
-  });
-
-  const meta = STATUS_META[status];
-  pushNotification({
-    title: `${meta.icon} ${meta.label}`,
-    message: STATUS_NOTIFICATION_MESSAGE[status](updated),
-    type: status === "cancelled" ? "error" : status === "delivered" ? "success" : "info",
-    // Adressée au vrai client, même quand c'est le vendeur/livreur qui déclenche
-    // le changement depuis son propre appareil.
-    userId: updated.customerId,
-  });
+  })
+    .then(() => {
+      // Notification émise seulement une fois le changement réellement enregistré.
+      const meta = STATUS_META[status];
+      pushNotification({
+        title: `${meta.icon} ${meta.label}`,
+        message: STATUS_NOTIFICATION_MESSAGE[status](updated),
+        type: status === "cancelled" ? "error" : status === "delivered" ? "success" : "info",
+        // Adressée au vrai client, même quand c'est le vendeur/livreur qui déclenche
+        // le changement depuis son propre appareil.
+        userId: updated.customerId,
+      });
+    })
+    .catch((error) => {
+      replaceOrder(id, previous);
+      reportWriteError("orderStore.updateOrderStatus", error);
+    });
 }
 
 /** Rattache un livreur à une commande (voir acceptOrder/acceptAvailableOrder dans deliveryStore). */
 export function assignDelivery(orderId: string, deliveryId: string) {
-  store.setState((orders) =>
-    orders.map((order) => (order.id === orderId ? { ...order, deliveryId } : order))
-  );
+  const previous = patchOrder(orderId, { deliveryId });
 
   updateDoc(docRef(ORDERS_COLLECTION, orderId), { deliveryId }).catch((error) => {
-    if (__DEV__) console.warn("[orderStore] assignDelivery failed:", error);
+    if (previous) replaceOrder(orderId, previous);
+    reportWriteError("orderStore.assignDelivery", error);
   });
 }
 

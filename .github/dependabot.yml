@@ -1,0 +1,17 @@
+version: 2
+updates:
+  # Expo impose des versions alignées sur le SDK : on ne laisse passer que les
+  # correctifs (patch) automatiquement ; les montées de SDK se font à la main
+  # avec `npx expo install --fix` (voir AGENTS.md).
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
